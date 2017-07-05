@@ -83,9 +83,9 @@ def write(filename, txt):
 
 # Takes in XML file of managed systems, parsing it and
 # retrieving Managed system and VIOS UUIDs and Machine SerialNumber
-# Input: XML file of managed systems
+# Input: XML file of managed systems, session key, and hmc ip
 # Output: dict of mapped managed systems to thier SerialNumbers and VIOS
-def managed_system_discovery(xml_file):
+def managed_system_discovery(xml_file, session_key, hmc_ip):
     vios_arr = [] # list of all vios UUIDs
     m = {} # managed system to vios mapping
     managed_system = "" # string to hold current managed system being searched
@@ -135,7 +135,37 @@ def managed_system_discovery(xml_file):
         # Check if key already exists
         if line[line.index("ManagedSystem")+1] in m:
             m[line[line.index("ManagedSystem")+1]].append(s)
-    return m
+
+    uuid_arr = []
+    for key, values in m.iteritems():
+        for uuid in values[1:]:
+            uuid_arr.append(uuid)
+
+    # Get PartitionIDs
+    vios_part = {} 
+    i = 0
+    for uuid in uuid_arr:
+        filename = "vios%s.xml" %(i)
+        i += 1
+        touch(filename)
+        get_client_info(session_key, hmc_ip, uuid, filename)
+        # TODO for every file vios(n) get the partion id
+        # Parse file for partition IDs
+        tree = ET.ElementTree(file=filename)
+        iter_ = tree.getiterator()
+        for elem in iter_:
+            if ( re.sub(r'{[^>]*}', "", elem.tag) == "PartitionID"):
+                vios_part[uuid] = elem.text
+                break
+
+    # Clean up
+    i = 0
+    for uuid in uuid_arr:
+        filename = "vios%s.xml" %(i)
+        i += 1
+        remove(filename)
+
+    return m, vios_part
 
 # Inputs: HMC IP address, user ID, password
 # Output: session key
@@ -186,26 +216,29 @@ def print_uuid(hmc_ip, user_id, password, arg):
         c.perform()
 
     # Mapped managed systems
-    m = managed_system_discovery('systems.xml')
+    m, vios_part = managed_system_discovery('systems.xml', sess_key, hmc_ip)
 
     if (arg == 'm'):
         # Print only managed systems
-        print "\nManaged System UUIDs                 Serial"
-        print "-" * 37, "-"*16
+        print "\nManaged Systems UUIDs                   Serial"
+        print "-" * 37 + "\t" + "-"*22
         for key, values in m.iteritems():
-            s = '\n'.join(values[0])
-            v = '\t'.join(values[1:])
-            print key + "  " + s
-    elif (arg == 'a'):
-        print "\nManaged Systems UUIDs                 Serial            VIOS"
-        print "-" * 37, "-"*16, "-" * 78
+            print key + "\t" + ''.join(values[0]) + "\n"
+
+    elif ( arg == 'a'):
+        print "\nManaged Systems UUIDs                   Serial"
+        print "-" * 37 + "\t" + "-"*22
         for key, values in m.iteritems():
-            s = '\n'.join(values[0])
-            v = '\t'.join(values[1:])
-            print key + "  " + s + "\t" + v + "\n"
+            print key + "\t" + ''.join(values[0]) + "\n"
+            print"\tVIOS                                    Partition ID"
+            print "\t" + "-" * 37 + "\t" + "-" * 14
+            for v in values[1:]:
+                print "\t" + v + "\t" + vios_part[v]
+            print "\n"
     else:
         print "Invalid option. \nUsage: [-l m | -l a]"
     remove('systems.xml')
+    exit()
 
 
 ### Parsing functions ###
@@ -894,7 +927,7 @@ print "Local slot VSCSI: %s" %(local_slot_vscsi)
 print "Remote slot VSCSI: %s" %(remote_slot_vscsi)
 print "Backing device VSCSI: %s\n" %(backing_device_vscsi)
 
-Parse for backup device info
+# Parse for backup device info
 tree = ET.ElementTree(file='vscsi_mapping.xml')
 iter_ = tree.getiterator()
 for elem in iter_:
