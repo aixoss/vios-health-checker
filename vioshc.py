@@ -846,29 +846,31 @@ write(fd, divider)
 
 msg_txt = open('msg.txt', 'w+')
 for partition in local_partition_vscsi:
-    if (partition == vios1_partitionid):
-        # ssh into VIOS1 to make sure we can open disk
+    if (partition == vios2_partitionid):
+        # ssh into VIOS2 to make sure we can open disk
         try:
-            cmd = "ssh padmin@%s \"print '< /dev/%s' | oem_setup_env\"" %(vios1_ip, backing_device_vscsi[j])
+            cmd = "ssh padmin@%s \"print '< /dev/%s' | oem_setup_env\"" %(vios2_ip, backing_device_vscsi[j])
             os.popen(cmd)
+
+            if (backing_device_res_vscsi[j] == "SinglePath"):
+                msg = "WARNING: You have single path for %s on VIOS %s which is likely an issue" %(backing_device_vscsi[j], vios1_name)
+                print msg
+                msg_txt.write(msg)
+            elif (backing_device_type_vscsi[j] == "Other"):
+                msg = "WARNING: %s is not supported by both VIOSes because it is of type %s" %(backing_device_vscsi[j], backing_device_type_vscsi[j])
+                print msg
+                msg_txt.write(msg)
+            elif (backing_device_type_vscsi[j] == "LogicalVolume"):
+                msg = "WARNING: This program cannot guarantee that the data in this %s is accessible via both VIOSes" %(backing_device_vscsi[j])
+                print msg
+                msg_txt.write(msg)
+            else:
+                available_disks_2.append(backing_device_id_vscsi[j])
+                write(fd, format %(backing_device_vscsi[j], backing_device_id_vscsi[j], backing_device_type_vscsi[j], backing_device_res_vscsi[j]))
+
         except:
             print "ERROR: health check failed, cannot open disk"
 
-        if (backing_device_res_vscsi[j] == "SinglePath"):
-            msg = "WARNING: You have single path for %s on VIOS %s which is likely an issue" %(backing_device_vscsi[j], vios1_name)
-            print msg
-            msg_txt.write(msg)
-        elif (backing_device_type_vscsi[j] == "Other"):
-            msg = "WARNING: %s is not supported by both VIOSes because it is of type %s" %(backing_device_vscsi[j], backing_device_type_vscsi[j])
-            print msg
-            msg_txt.write(msg)
-        elif (backing_device_type_vscsi[j] == "LogicalVolume"):
-            msg = "WARNING: This program cannot guarantee that the data in this %s is accessible via both VIOSes" %(backing_device_vscsi[j])
-            print msg
-            msg_txt.write(msg)
-        else:
-            available_disks_1.append(backing_device_id_vscsi[j])
-        write(fd, format %(backing_device_vscsi[j], backing_device_id_vscsi[j], backing_device_type_vscsi[j], backing_device_res_vscsi[j]))
         j += 1
     i += 1
 
@@ -983,24 +985,26 @@ for partition in local_partition_vscsi:
         try:
             cmd = "ssh padmin@%s \"print '< /dev/%s' | oem_setup_env\"" %(vios2_ip, backing_device_vscsi[j])
             os.popen(cmd)
+
+            if (backing_device_res_vscsi[j] == "SinglePath"):
+                msg = "WARNING: You have single path for %s on VIOS %s which is likely an issue" %(backing_device_vscsi[j], vios1_name)
+                print msg
+                msg_txt.write(msg)
+            elif (backing_device_type_vscsi[j] == "Other"):
+                msg = "WARNING: %s is not supported by both VIOSes because it is of type %s" %(backing_device_vscsi[j], backing_device_type_vscsi[j])
+                print msg
+                msg_txt.write(msg)
+            elif (backing_device_type_vscsi[j] == "LogicalVolume"):
+                msg = "WARNING: This program cannot guarantee that the data in this %s is accessible via both VIOSes" %(backing_device_vscsi[j])
+                print msg
+                msg_txt.write(msg)
+            else:
+                available_disks_2.append(backing_device_id_vscsi[j])
+                write(fd, format %(backing_device_vscsi[j], backing_device_id_vscsi[j], backing_device_type_vscsi[j], backing_device_res_vscsi[j]))
+
         except:
             print "ERROR: health check failed, cannot open disk"
 
-        if (backing_device_res_vscsi[j] == "SinglePath"):
-            msg = "WARNING: You have single path for %s on VIOS %s which is likely an issue" %(backing_device_vscsi[j], vios1_name)
-            print msg
-            msg_txt.write(msg)
-        elif (backing_device_type_vscsi[j] == "Other"):
-            msg = "WARNING: %s is not supported by both VIOSes because it is of type %s" %(backing_device_vscsi[j], backing_device_type_vscsi[j])
-            print msg
-            msg_txt.write(msg)
-        elif (backing_device_type_vscsi[j] == "LogicalVolume"):
-            msg = "WARNING: This program cannot guarantee that the data in this %s is accessible via both VIOSes" %(backing_device_vscsi[j])
-            print msg
-            msg_txt.write(msg)
-        else:
-            available_disks_2.append(backing_device_id_vscsi[j])
-        write(fd, format %(backing_device_vscsi[j], backing_device_id_vscsi[j], backing_device_type_vscsi[j], backing_device_res_vscsi[j]))
         j += 1
     i += 1
 
@@ -1434,7 +1438,7 @@ else:
     print "VNIC Configuration Not Detected"
 
 remove('vnic_fails.txt')
-remove('vnic.xml')
+#remove('vnic.xml')
 
 
 #######################################################
@@ -1446,7 +1450,7 @@ total_hc = num_hc_fail + num_hc_pass
 pass_pct = num_hc_pass * 100 / total_hc
 print "\n%d of %d Health Checks Passed\n" %(num_hc_pass, total_hc)
 print "%d of %d Health Checks Failed\n" %(num_hc_fail, total_hc)
-print "Pass rate of %d\%\n" %(pass_pct)
+print "Pass rate of %d%%\n" %(pass_pct)
 
 os.close(fd)
 
