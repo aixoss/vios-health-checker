@@ -1167,8 +1167,7 @@ for lpar in active_client_uuid:
     except:
         print "ERROR: Request to https://%s:12443/rest/api/uom/LogicalPartition/%s/VirtualFibreChannelClientAdapter failed." %(hmc_ip, lpar)
         sys.exit(3)
-
-    print "Error here"
+    
     #Create a list of fibre channel IDs
     fc_ids = grep_array('fc_mapping2.xml', 'LocalPartitionID')
     #Create a list of dynamic reconfiguration connectors
