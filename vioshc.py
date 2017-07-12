@@ -238,7 +238,6 @@ def print_uuid(hmc_ip, user_id, password, arg):
     else:
         print "Invalid option. \nUsage: [-l m | -l a]"
     remove('systems.xml')
-    exit()
 
 
 ### Parsing functions ###
@@ -259,7 +258,12 @@ def grep (filename, tag):
 # Output: array of values corresponding to given tag
 def grep_array(filename, tag):
     arr = []
-    tree = ET.ElementTree(file=filename)
+    try:
+        tree = ET.ElementTree(file=filename)
+    except:
+        print "Cannot read file"
+        return arr
+
     iter_ = tree.getiterator()
     for elem in iter_:
         if ( re.sub(r'{[^>]*}', "", elem.tag) == tag):
@@ -271,7 +275,11 @@ def grep_array(filename, tag):
 # Output: True if tag exists, False otherwise
 def grep_check (filename, tag):
     found = False
-    tree = ET.ElementTree(file=filename)
+    try:
+        tree = ET.ElementTree(file=filename)
+    except:
+        print "Cannot read file"
+        return found
     iter_ = tree.getiterator()
     for elem in iter_:
         if ( re.sub(r'{[^>]*}', "", elem.tag) == tag):
@@ -283,7 +291,11 @@ def grep_check (filename, tag):
 # Output: array of values corresponding to given tags
 def awk (filename, tag1, tag2):
     arr = []
-    tree = ET.ElementTree(file=filename)
+    try:
+        tree = ET.ElementTree(file=filename)
+    except:
+        print "Cannot read file"
+        return arr
     iter_ = tree.getiterator()
     for elem in iter_:
         if ( re.sub(r'{[^>]*}', "", elem.tag) == tag1):
@@ -433,7 +445,7 @@ def usage():
             """
 
 try:
-    opts, args = getopt.getopt(sys.argv[1:], 'i:u:p:U:m:v:l:', ['HMC IP=', 'User ID=', 'Password=', 'VIOS UUID=', 'Managed System UUID=', 'Verbose', 'List'])
+    opts, args = getopt.getopt(sys.argv[1:], 'i:u:p:U:m:vl:', ['HMC IP=', 'User ID=', 'Password=', 'VIOS UUID=', 'Managed System UUID=', 'Verbose', 'List'])
 except getopt.GetoptError:
     usage()
     sys.exit(2)
@@ -463,7 +475,6 @@ for opt, arg in opts:
             print "Invalid UUID. Please try again.\n"
     elif opt in ('-v'):
         verbose = 1
-        silent = 0
         sys.stdout = sys.stderr
     elif opt in ('-l'):
         print_uuid(hmc_ip, user_id, password, arg)
@@ -789,15 +800,19 @@ remote_slot_vscsi = grep_array('vscsi_mapping.xml', 'RemoteSlotNumber')
 # Grab the backup device name
 backing_device_vscsi = grep_array('vscsi_mapping.xml', 'BackingDeviceName')
 
-print "Test output: "
-print "Local partition VSCSI: %s" %(local_partition_vscsi)
-print "Remote partition VSCSI: %s" %(remote_partition_vscsi)
-print "Local slot VSCSI: %s" %(local_slot_vscsi)
-print "Remote slot VSCSI: %s" %(remote_slot_vscsi)
-print "Backing device VSCSI: %s\n" %(backing_device_vscsi)
+# print "Test output: "
+# print "Local partition VSCSI: %s" %(local_partition_vscsi)
+# print "Remote partition VSCSI: %s" %(remote_partition_vscsi)
+# print "Local slot VSCSI: %s" %(local_slot_vscsi)
+# print "Remote slot VSCSI: %s" %(remote_slot_vscsi)
+# print "Backing device VSCSI: %s\n" %(backing_device_vscsi)
 
 # Parse for backup device info
-tree = ET.ElementTree(file='vscsi_mapping.xml')
+try:
+    tree = ET.ElementTree(file='vscsi_mapping.xml')
+except:
+    print "Cannot read file"
+    sys.exit(2)
 iter_ = tree.getiterator()
 for elem in iter_:
     if ( re.sub(r'{[^>]*}', "", elem.tag) == 'Storage'):
@@ -843,39 +858,40 @@ format = "%-15s %-75s %-20s %-20s \n"
 write(fd, vscsi_header)
 write(fd, divider)
 
+# if statement until storage info is accessible
+if (len(backing_device_vscsi) != 0):
+    msg_txt = open('msg.txt', 'w+')
+    for partition in local_partition_vscsi:
+        if (partition == vios2_partitionid):
+            # ssh into VIOS1 to make sure we can open disk
+            try:
+                cmd = "ssh padmin@%s \"print '< /dev/%s' | oem_setup_env\"" %(vios1_ip, backing_device_vscsi[j])
+                os.popen(cmd)
 
-msg_txt = open('msg.txt', 'w+')
-for partition in local_partition_vscsi:
-    if (partition == vios2_partitionid):
-        # ssh into VIOS2 to make sure we can open disk
-        try:
-            cmd = "ssh padmin@%s \"print '< /dev/%s' | oem_setup_env\"" %(vios2_ip, backing_device_vscsi[j])
-            os.popen(cmd)
+                if (backing_device_res_vscsi[j] == "SinglePath"):
+                    msg = "WARNING: You have single path for %s on VIOS %s which is likely an issue" %(backing_device_vscsi[j], vios1_name)
+                    print msg
+                    msg_txt.write(msg)
+                elif (backing_device_type_vscsi[j] == "Other"):
+                    msg = "WARNING: %s is not supported by both VIOSes because it is of type %s" %(backing_device_vscsi[j], backing_device_type_vscsi[j])
+                    print msg
+                    msg_txt.write(msg)
+                elif (backing_device_type_vscsi[j] == "LogicalVolume"):
+                    msg = "WARNING: This program cannot guarantee that the data in this %s is accessible via both VIOSes" %(backing_device_vscsi[j])
+                    print msg
+                    msg_txt.write(msg)
+                else:
+                    available_disks_1.append(backing_device_id_vscsi[j])
+                    write(fd, format %(backing_device_vscsi[j], backing_device_id_vscsi[j], backing_device_type_vscsi[j], backing_device_res_vscsi[j]))
 
-            if (backing_device_res_vscsi[j] == "SinglePath"):
-                msg = "WARNING: You have single path for %s on VIOS %s which is likely an issue" %(backing_device_vscsi[j], vios1_name)
-                print msg
-                msg_txt.write(msg)
-            elif (backing_device_type_vscsi[j] == "Other"):
-                msg = "WARNING: %s is not supported by both VIOSes because it is of type %s" %(backing_device_vscsi[j], backing_device_type_vscsi[j])
-                print msg
-                msg_txt.write(msg)
-            elif (backing_device_type_vscsi[j] == "LogicalVolume"):
-                msg = "WARNING: This program cannot guarantee that the data in this %s is accessible via both VIOSes" %(backing_device_vscsi[j])
-                print msg
-                msg_txt.write(msg)
-            else:
-                available_disks_2.append(backing_device_id_vscsi[j])
-                write(fd, format %(backing_device_vscsi[j], backing_device_id_vscsi[j], backing_device_type_vscsi[j], backing_device_res_vscsi[j]))
+            except:
+                print "ERROR: health check failed, cannot open disk"
 
-        except:
-            print "ERROR: health check failed, cannot open disk"
+            j += 1
+        i += 1
 
-        j += 1
-    i += 1
-
-msg_txt = open('msg.txt', 'r')
-print msg_txt.read()
+    msg_txt = open('msg.txt', 'r')
+    print msg_txt.read()
 
 remove('vscsi_mapping.xml')
 remove('msg.txt')
@@ -902,7 +918,7 @@ diff_disks = []
 # Create msg.txt
 touch('msg.txt')
 
-write(fd, "\nVSCSI MAPPINGS FOR %s:" %(vios2_name))
+write(fd, "\nVSCSI MAPPINGS FOR %s:\n" %(vios2_name))
 
 # Get VSCSI info, write data to 'vscsi_mapping.xml'
 get_vscsi_info(session_key, hmc_ip, vios2_uuid, 'vscsi_mapping.xml')
@@ -923,14 +939,12 @@ remote_slot_vscsi = grep_array('vscsi_mapping.xml', 'RemoteSlotNumber')
 # Grab the backup device name
 backing_device_vscsi = grep_array('vscsi_mapping.xml', 'BackingDeviceName')
 
-print "Local partition VSCSI: %s" %(local_partition_vscsi)
-print "Remote partition VSCSI: %s" %(remote_partition_vscsi)
-print "Local slot VSCSI: %s" %(local_slot_vscsi)
-print "Remote slot VSCSI: %s" %(remote_slot_vscsi)
-print "Backing device VSCSI: %s\n" %(backing_device_vscsi)
-
 # Parse for backup device info
-tree = ET.ElementTree(file='vscsi_mapping.xml')
+try:
+    tree = ET.ElementTree(file='vscsi_mapping.xml')
+except:
+    print "Cannot read"
+    sys.exit(2)
 iter_ = tree.getiterator()
 for elem in iter_:
     if ( re.sub(r'{[^>]*}', "", elem.tag) == 'Storage'):
@@ -977,39 +991,39 @@ format = "%-15s %-75s %-20s %-20s \n"
 write(fd, vscsi_header)
 write(fd, divider)
 
+if (len(backing_device_vscsi) != 0):
+    msg_txt = open('msg.txt', 'w+')
+    for partition in local_partition_vscsi:
+        if (partition == vios2_partitionid):
+            # ssh into VIOS2 to make sure we can open disk
+            try:
+                cmd = "ssh padmin@%s \"print '< /dev/%s' | oem_setup_env\"" %(vios2_ip, backing_device_vscsi[j])
+                os.popen(cmd)
 
-msg_txt = open('msg.txt', 'w+')
-for partition in local_partition_vscsi:
-    if (partition == vios2_partitionid):
-        # ssh into VIOS2 to make sure we can open disk
-        try:
-            cmd = "ssh padmin@%s \"print '< /dev/%s' | oem_setup_env\"" %(vios2_ip, backing_device_vscsi[j])
-            os.popen(cmd)
+                if (backing_device_res_vscsi[j] == "SinglePath"):
+                    msg = "WARNING: You have single path for %s on VIOS %s which is likely an issue" %(backing_device_vscsi[j], vios2_name)
+                    print msg
+                    msg_txt.write(msg)
+                elif (backing_device_type_vscsi[j] == "Other"):
+                    msg = "WARNING: %s is not supported by both VIOSes because it is of type %s" %(backing_device_vscsi[j], backing_device_type_vscsi[j])
+                    print msg
+                    msg_txt.write(msg)
+                elif (backing_device_type_vscsi[j] == "LogicalVolume"):
+                    msg = "WARNING: This program cannot guarantee that the data in this %s is accessible via both VIOSes" %(backing_device_vscsi[j])
+                    print msg
+                    msg_txt.write(msg)
+                else:
+                    available_disks_2.append(backing_device_id_vscsi[j])
+                    write(fd, format %(backing_device_vscsi[j], backing_device_id_vscsi[j], backing_device_type_vscsi[j], backing_device_res_vscsi[j]))
 
-            if (backing_device_res_vscsi[j] == "SinglePath"):
-                msg = "WARNING: You have single path for %s on VIOS %s which is likely an issue" %(backing_device_vscsi[j], vios1_name)
-                print msg
-                msg_txt.write(msg)
-            elif (backing_device_type_vscsi[j] == "Other"):
-                msg = "WARNING: %s is not supported by both VIOSes because it is of type %s" %(backing_device_vscsi[j], backing_device_type_vscsi[j])
-                print msg
-                msg_txt.write(msg)
-            elif (backing_device_type_vscsi[j] == "LogicalVolume"):
-                msg = "WARNING: This program cannot guarantee that the data in this %s is accessible via both VIOSes" %(backing_device_vscsi[j])
-                print msg
-                msg_txt.write(msg)
-            else:
-                available_disks_2.append(backing_device_id_vscsi[j])
-                write(fd, format %(backing_device_vscsi[j], backing_device_id_vscsi[j], backing_device_type_vscsi[j], backing_device_res_vscsi[j]))
+            except:
+                print "ERROR: health check failed, cannot open disk"
 
-        except:
-            print "ERROR: health check failed, cannot open disk"
+            j += 1
+        i += 1
 
-        j += 1
-    i += 1
-
-msg_txt = open('msg.txt', 'r')
-print msg_txt.read()
+    msg_txt = open('msg.txt', 'r')
+    print msg_txt.read()
 
 #Check to see if any disks are different
 for disk in available_disks_1:
@@ -1143,9 +1157,13 @@ for lpar in active_client_uuid:
     # Get LPAR info, write data to fc_mapping2.xml
     try:
         get_lpar_info(session_key, hmc_ip, lpar, 'fc_mapping2.xml')
+        cmd = "cat %s > output" %(fc_mapping2.xml)
+        os.system(cmd)
     except:
         print "ERROR: Request to https://%s:12443/rest/api/uom/LogicalPartition/%s/VirtualFibreChannelClientAdapter failed." %(hmc_ip, lpar)
         sys.exit(3)
+
+    #print "Cannot get NPIV information" #temp
 
     #Create a list of fibre channel IDs
     fc_ids = grep_array('fc_mapping2.xml', 'LocalPartitionID')
@@ -1177,10 +1195,8 @@ for lpar in active_client_uuid:
             j += 1 # one more increment bc we skip clients, and drc_list repeats itself twice
 
             # ssh to both, get notzoned info, check to see if false
-            cmd = 'ssh padmin@%s "echo /usr/lib/methods/mig_vscsi -f get_adapter -t vscsi -s %s -a ACTIVE_LPM -c RPA  -M 1 -d 5 -W 0x%s -w 0x%s -F %s | ioscli oem_setup_env " 1>/dev/null 2>&1' %(vios1_ip, DRC, lower_WWPN, higher_WWPN, adapter1_xml)
-            os.system(cmd)
-            cmd = 'ssh padmin@%s "cat %s" > /tmp/adapter1.xml' %(vios1_ip, adapter1_xml)
-            os.system(cmd)
+            cmd = "ssh padmin@%s \"echo /usr/lib/methods/mig_vscsi -f get_adapter -t vscsi -s %s -a ACTIVE_LPM -c RPA  -M 1 -d 5 -W 0x%s -w 0x%s -F %s | ioscli oem_setup_env \"" %(vios1_ip, DRC, lower_WWPN, higher_WWPN, adapter1_xml)
+            os.popen(cmd)
 
             if os.path.exists('adapter1.xml'):
                 notzoned_value1 = grep('adapter1.xml', 'notZoned')
@@ -1192,10 +1208,8 @@ for lpar in active_client_uuid:
             DRC = drc_list[j]
             j += 1 # one more increment bc we skip clients, and drc_list repeats itself twice
             # ssh to both, get notzoned info, check to see if false
-            cmd = 'ssh padmin@%s "echo /usr/lib/methods/mig_vscsi -f get_adapter -t vscsi -s %s -a ACTIVE_LPM -c RPA  -M 1 -d 5 -W 0x%s -w 0x%s -F %s | ioscli oem_setup_env" 1>/dev/null 2>&1' %(vios2_ip, DRC, lower_WWPN, higher_WWPN, adapter2_xml)
-            os.system(cmd)
-            cmd = 'ssh padmin@%s "cat %s" > /tmp/adapter2.xml' %(vios2_ip, adapter2_xml)
-            os.system(cmd)
+            cmd = "ssh padmin@%s \"echo /usr/lib/methods/mig_vscsi -f get_adapter -t vscsi -s %s -a ACTIVE_LPM -c RPA  -M 1 -d 5 -W 0x%s -w 0x%s -F %s | ioscli oem_setup_env \"" %(vios2_ip, DRC, lower_WWPN, higher_WWPN, adapter2_xml)
+            os.popen(cmd)
 
             if os.path.exists('adapter2.xml'):
                 notzoned_value1 = grep('adapter1.xml', 'notZoned')
