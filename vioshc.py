@@ -79,6 +79,20 @@ def write(filename, txt):
     else:
         print txt
 
+# Remove extra headers from top of XML file
+def format_xml_file(filename):
+    with open(filename, 'r+') as f:
+        lines = f.readlines()
+        f.seek(0)
+        start_writing = False
+        for i in lines:
+            if i[0] == '<':
+                start_writing = True
+            if start_writing:   
+                f.write(i)
+        f.truncate()
+        f.close()
+
 ### Interfacing functions ###
 
 # Takes in XML file of managed systems, parsing it and
@@ -247,6 +261,7 @@ def print_uuid(hmc_ip, user_id, password, arg):
 # Inputs: file name, tag
 # Output: value
 def grep (filename, tag):
+    format_xml_file(filename)
     tree = ET.ElementTree(file=filename)
     iter_ = tree.getiterator()
     for elem in iter_:
@@ -258,8 +273,13 @@ def grep (filename, tag):
 # Inputs: file name, tag
 # Output: array of values corresponding to given tag
 def grep_array(filename, tag):
+    format_xml_file(filename)
     arr = []
-    tree = ET.ElementTree(file=filename)
+    try:
+        tree = ET.ElementTree(file=filename)
+    except:
+        return arr
+
     iter_ = tree.getiterator()
     for elem in iter_:
         if ( re.sub(r'{[^>]*}', "", elem.tag) == tag):
@@ -270,8 +290,12 @@ def grep_array(filename, tag):
 # Inputs: file name, tag
 # Output: True if tag exists, False otherwise
 def grep_check (filename, tag):
+    #format_xml_file(filename)
     found = False
-    tree = ET.ElementTree(file=filename)
+    try:
+        tree = ET.ElementTree(file=filename)
+    except:
+        return found
     iter_ = tree.getiterator()
     for elem in iter_:
         if ( re.sub(r'{[^>]*}', "", elem.tag) == tag):
@@ -378,7 +402,6 @@ def get_lpar_info (session_key, hmc_ip, lpar, filename):
     with open(filename, 'wb') as f:
         url = "https://%s:12443/rest/api/uom/LogicalPartition/%s/VirtualFibreChannelClientAdapter" %(hmc_ip, lpar)
         hdrs = ["X-API-Session:%s" %(session_key)]
-
         c = pycurl.Curl()
         c.setopt(c.HTTPHEADER, hdrs)
         c.setopt(c.URL, url)
@@ -510,7 +533,6 @@ except:
     print "ERROR: Request to https://$%s:12443/rest/api/uom/VirtualIOServer failed." %(hmc_ip)
     sys.exit(3)
 
-
 # Grab all UUIDs, names, and partition IDs from xml doc and map the names in
 # order to get UUID to name mapping as well as partition ID
 vios_uuid_list = []
@@ -566,7 +588,6 @@ vios_control_state_list = grep_array('vios_info.xml', 'ResourceMonitoringControl
 if (len(vios_control_state_list) == 0):
     print "ERROR: Unable to detect partition control states. Exiting Now."
     sys.exit(2)
-
 
 # Create new lists with just the info we want - since we have to query all
 # the VIOS in the HMC for the REST API, there is a lot of unnecessary info
@@ -1147,6 +1168,7 @@ for lpar in active_client_uuid:
         print "ERROR: Request to https://%s:12443/rest/api/uom/LogicalPartition/%s/VirtualFibreChannelClientAdapter failed." %(hmc_ip, lpar)
         sys.exit(3)
 
+    print "Error here"
     #Create a list of fibre channel IDs
     fc_ids = grep_array('fc_mapping2.xml', 'LocalPartitionID')
     #Create a list of dynamic reconfiguration connectors
