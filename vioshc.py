@@ -168,6 +168,7 @@ def managed_system_discovery(xml_file, session_key, hmc_ip):
         tree = ET.ElementTree(file=filename)
         iter_ = tree.getiterator()
         for elem in iter_:
+            vios_part[uuid] = "Not found"
             if ( re.sub(r'{[^>]*}', "", elem.tag) == "PartitionID"):
                 vios_part[uuid] = elem.text
                 break
