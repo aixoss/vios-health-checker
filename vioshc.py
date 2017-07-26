@@ -95,6 +95,93 @@ def format_xml_file(filename):
 
 ### Interfacing functions ###
 
+# Takes in the hmc internet address and tries to
+# retrieve the username and password
+# Input: (str) hmc internet address
+# Output: (str) username and password
+def retrieve_usr_pass(hmc_ip):
+
+    # Validate hmc_ip
+    managed_system = validate_hmc_ip(hmc_ip)
+    if (  managed_system == ""):
+        print "Error: hmc ip is not valid"
+        exit()
+
+    managed_type = get_managed_type(managed_system)
+
+    managed_hostname = get_hostname(managed_system)
+
+    passwd_file = get_password_file(managed_system)
+
+    decrypt_file = get_decrypt_file(passwd_file, managed_type, managed_hostname)
+
+    user, passwd = get_usr_passwd(decrypt_file)
+
+    # Clean up
+    remove(decrypt_file)
+     
+    return user, passwd
+
+# Validates the hmc ip
+# Input: (str) hmc internet address
+# Output: (str) hmc object name
+def validate_hmc_ip(hmc_ip):
+
+    # Check hmc_ip
+    if (hmc_ip==""):
+        return ""
+
+    # Get the name from hmc_ip
+    name = hmc_ip.split('.')
+
+    # Query the nim enviroment and look for match
+    cmd = "/usr/sbin/lsnim -l" 
+    for line in os.popen(cmd).read().split('\n'):
+        if (re.search(name[0], line) != None):
+            return name[0]
+            break
+    
+    return ""
+
+def get_managed_type(managed_system):
+    cmd = "/usr/sbin/lsnim -l %s" %(managed_system)
+    for line in os.popen(cmd).read().split('\n'):
+        if (re.search('type', line) != None):
+            line = "".join(line.split())
+            return line.split('=')[1]
+
+def get_hostname(managed_system):
+    cmd = "/usr/sbin/lsnim -a if1 %s" %(managed_system)
+    array = os.popen(cmd).read().split(" ")
+    return array[6]
+    # TODO get hostname
+
+# Takes in managed system and returns the path to the password file
+# Input: (str) managed system
+# Output: (str) path to password file
+def get_password_file(managed_system):
+    cmd = "/usr/sbin/lsnim -a passwd_file %s" %(managed_system)
+    arr = os.popen(cmd).read().split(' ')
+    line = arr[5]
+    return line.strip('\n')
+
+# Takes in the encrypted password file and decrypts it
+# Input: (str) password file, mananged type, managed hostname
+# Output: (str) decrypted file
+def get_decrypt_file(passwd_file, managed_type, managed_hostname):
+    cmd = "/usr/bin/dkeyexch -f %s -I %s -H %s -S" %(passwd_file, managed_type, managed_hostname)
+    arr = os.popen(cmd).read().split('\n')
+    return arr[1]
+
+# Reads the decrypted file and returns the username and password
+# Input: (str) decrypted file
+# Output: (str) username and password
+def get_usr_passwd(decrypt_file):
+    with open(decrypt_file, 'r') as f:
+        arr = f.read().split(' ')
+
+    return arr[0], arr[1]
+
 # Takes in XML file of managed systems, parsing it and
 # retrieving Managed system and VIOS UUIDs and Machine SerialNumber
 # Input: XML file of managed systems, session key, and hmc ip
@@ -252,7 +339,12 @@ def print_uuid(hmc_ip, user_id, password, arg):
             print "\n"
     else:
         print "Invalid option. \nUsage: [-l m | -l a]"
+
+    # Clean up
     remove('systems.xml')
+
+    # Exit the program once output displayed
+    exit()
 
 
 ### Parsing functions ###
@@ -495,6 +587,11 @@ for opt, arg in opts:
     else:
         usage()
         sys.exit(2)
+
+    # If either username or password are empty
+    # Try to retrieve them both
+    if ( (password=="") or (user_id=="") ):
+        user_id, password = retrieve_usr_pass(hmc_ip)
 
     session_key = get_session_key(hmc_ip, user_id, password)
 
