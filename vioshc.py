@@ -104,23 +104,27 @@ def retrieve_usr_pass(hmc_ip):
     # Validate hmc_ip
     managed_system = validate_hmc_ip(hmc_ip)
     if (  managed_system == ""):
-        print "Error: hmc ip is not valid"
-        exit()
+        print "Error: hmc ip is not valid. Exiting now."
+        sys.exit(3)
 
-    managed_type = get_managed_type(managed_system)
+    # Attempt to retrieve username and password
+    try:
+        managed_type = get_managed_type(managed_system)
+        managed_hostname = get_hostname(managed_system)
+        passwd_file = get_password_file(managed_system)
+        decrypt_file = get_decrypt_file(passwd_file, managed_type, managed_hostname)
+        user, passwd = get_usr_passwd(decrypt_file)
 
-    managed_hostname = get_hostname(managed_system)
+        # Clean up
+        remove(decrypt_file)
 
-    passwd_file = get_password_file(managed_system)
+        return user, passwd
 
-    decrypt_file = get_decrypt_file(passwd_file, managed_type, managed_hostname)
-
-    user, passwd = get_usr_passwd(decrypt_file)
-
-    # Clean up
-    remove(decrypt_file)
+    except IndexError:
+        print "Error: Failded to retrieve user ID and password for %s" %(hmc_ip)
+        sys.exit(3)
      
-    return user, passwd
+    
 
 # Validates the hmc ip
 # Input: (str) hmc internet address
@@ -154,7 +158,6 @@ def get_hostname(managed_system):
     cmd = "/usr/sbin/lsnim -a if1 %s" %(managed_system)
     array = os.popen(cmd).read().split(" ")
     return array[6]
-    # TODO get hostname
 
 # Takes in managed system and returns the path to the password file
 # Input: (str) managed system
@@ -250,6 +253,7 @@ def managed_system_discovery(xml_file, session_key, hmc_ip):
         i += 1
         touch(filename)
         get_client_info(session_key, hmc_ip, uuid, filename)
+
         # TODO for every file vios(n) get the partion id
         # Parse file for partition IDs
         tree = ET.ElementTree(file=filename)
@@ -300,10 +304,11 @@ def get_session_key (hmc_ip, user_id, password):
 # Input: HMC IP address, user id, password, argument flag
 # Output: None
 def print_uuid(hmc_ip, user_id, password, arg):
-    # Check for necessary flags
-    if (hmc_ip == "" or user_id == "" or password == ""):
-        print "Please include [-i hmc_ip_address] [-u user_id] [-p password]"
-        sys.exit(2)
+
+    # Attempt to retrieve user and password
+    if ( (password=="") or (user_id=="") ):
+        user_id, password = retrieve_usr_pass(hmc_ip)
+
     sess_key = get_session_key(hmc_ip, user_id, password)
 
     with open('systems.xml', 'wb') as file:
@@ -588,12 +593,16 @@ for opt, arg in opts:
         usage()
         sys.exit(2)
 
-    # If either username or password are empty
-    # Try to retrieve them both
-    if ( (password=="") or (user_id=="") ):
-        user_id, password = retrieve_usr_pass(hmc_ip)
+# If either username or password are empty
+# Try to retrieve them both
+if ( (password=="") or (user_id=="") ):
+    user_id, password = retrieve_usr_pass(hmc_ip)
 
+try:
     session_key = get_session_key(hmc_ip, user_id, password)
+except:
+    print "ERROR: Failed to connect to %s when retrieving session key" %(hmc_ip)
+    sys.exit(3)
 
 # If verbose-output not requested, write to fd
 fd = os.open('f1.txt', os.O_RDWR|os.O_CREAT)
