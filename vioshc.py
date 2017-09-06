@@ -799,7 +799,7 @@ if vios_nb > 1:
         sys.exit(3)
 
 # Find UUID and IP addresses of VIOSes, write data to vios_info.xml
-write("\nFind the UUID and IP address of the VIOS\n")
+write("\nFind the UUID and IP address of the VIOS(es)\n")
 try:
     get_vios_info(session_key, hmc_ip, 'vios_info.xml')
 except:
@@ -925,9 +925,21 @@ error = 0
 if found_vios1 != 1:
     write("ERROR: Unable to find VIOS with UUID %s." %(vios1_uuid), lvl=0)
     error += 1
-if vios_nb > 1 and found_vios2 != 1:
-    write("ERROR: Unable to find VIOS with UUID %s." %(vios2_uuid), lvl=0)
-    error += 1
+else:
+    log("VIOS1 name: %s\n" %(vios1_name))
+    log("VIOS1 uuid: %s\n" %(vios1_uuid))
+    log("VIOS1 partition id: %s\n" %(vios1_partitionid))
+    log("VIOS1 ip: %s\n" %(vios1_ip))
+
+if vios_nb > 1:
+    if found_vios2 != 1:
+        write("ERROR: Unable to find VIOS with UUID %s." %(vios2_uuid), lvl=0)
+        error += 1
+    else:
+        log("VIOS2 name: %s\n" %(vios2_name))
+        log("VIOS2 uuid: %s\n" %(vios2_uuid))
+        log("VIOS2 partition id: %s\n" %(vios2_partitionid))
+        log("VIOS2 ip: %s\n" %(vios2_ip))
 
 if error != 0:
     sys.exit(2)
@@ -947,7 +959,6 @@ try:
 except:
     write("ERROR: Request to https://$%s:12443/rest/api/uom/ManagedSystem/$%s/LogicalPartition failed." %(hmc_ip, managed_system_uuid), lvl=0)
     sys.exit(3)
-
 
 lpar_id = []
 lpar_name = []
@@ -977,6 +988,7 @@ id_to_name = {}
 write("\nLPAR information belonging to managed system with UUID %s:" %(managed_system_uuid))
 
 # Create associative arrays
+log("lpar_id: %s, lpar_name: %s, lpar_uuid: %s\n" %(lpar_id, lpar_name, lpar_uuid))
 i = 0
 for lpar in lpar_id:
     uuid_to_partname[lpar_uuid[i]] = lpar_name[i]
@@ -984,7 +996,10 @@ for lpar in lpar_id:
     id_to_name[lpar_id[i]] = lpar_name[i]
     i += 1
 
-######################
+#######################################################
+# Check active client are the same for VIOS1 and VIOS2
+#######################################################
+log("\nCheck active client(s):\n")
 active_client_id_1 = []
 active_client_id_2 = []
 active_client_uuid = []
@@ -993,16 +1008,19 @@ diff_clients = []
 
 # Find configured clients of VIOS1
 active_client_id_1 = awk('vios1_only.xml', 'ServerAdapter', 'ConnectingPartitionID')
+log("active_client_id_1: " + str(active_client_id_1))
+
 if vios_nb > 1:
     # Find configured clients of VIOS2
     active_client_id_2 = awk('vios2_only.xml', 'ServerAdapter', 'ConnectingPartitionID')
+    log("active_client_id_2: " + str(active_client_id_2))
 
-# Check that both VIOSes have the same clients
-# if they do not, all health-checks will fail and we cannot continue the program
-for id in active_client_id_1:
-    if (vios_nb > 1 and id not in active_client_id_2) and (id not in diff_clients):
-        diff_clients.append(id)
-diff_clients.sort()
+    # Check that both VIOSes have the same clients
+    # if they do not, all health-checks will fail and we cannot continue the program
+    for id in active_client_id_1:
+        if (id not in active_client_id_2) and (id not in diff_clients):
+            diff_clients.append(id)
+    diff_clients.sort()
 
 # Check for error response in lpar_info.xml
 if grep_check('lpar_info.xml', 'HttpErrorResponse'):
@@ -1010,7 +1028,8 @@ if grep_check('lpar_info.xml', 'HttpErrorResponse'):
     num_hc_fail += 1
     hc_fail = 1
 elif len(diff_clients) == 0:
-    write("PASS: Active client lists are the same for both VIOSes")
+    if vios_nb > 1:
+        write("PASS: Active client lists are the same for both VIOSes")
     active_client_id = active_client_id_1
     num_hc_pass += 1
 else:
@@ -1024,11 +1043,11 @@ for id in active_client_id:
     active_client_name.append(id_to_name[id])
 
 
+write("\nActive Client Information:")
+
 header = "LPAR                      ID         UUID                            "
 divider = "-------------------------------------------------------------------"
 format = "%-25s %-10s %-40s "
-
-write("\nClient Information:")
 write(header)
 write(divider)
 
@@ -1130,9 +1149,8 @@ while i < len(disk_info):
     backing_device_res_vscsi.append(disk_info[i+1])
     backing_device_id_vscsi.append(disk_info[i+2])
     i += 3
-
 if len(backing_device_id_vscsi) == 0:
-    write("WARNING: no disks configured on this system: %s." %(%(vios1_name)), lvl=0)
+    write("WARNING: no VSCSI disks configured on %s." %(vios1_name))
 
 i = 0 # index for looping through all partition mappings
 j = 0 # index for looping through backing devices
@@ -1173,7 +1191,6 @@ if len(backing_device_vscsi) != 0:
 
             j += 1
         i += 1
-
     msg_txt = open('msg.txt', 'r')
     print msg_txt.read()    # do not use write as it's already logged
 
@@ -1264,7 +1281,7 @@ if vios_nb > 1:
         i += 3
     
     if len(backing_device_id_vscsi) == 0:
-        write("WARNING: no disks configured with this system: %s." %(%(vios2_name)), lvl=0)
+        write("WARNING: no disks configured with this system: %s." %(vios2_name), lvl=0)
     
     i = 0 # index for looping through all partition mappings
     j = 0 # index for looping through backing devices
@@ -1357,7 +1374,10 @@ local_slot_fc = grep_array('fc_mapping.xml', 'VirtualSlotNumber')
 # Get remote slot number
 remote_slot_fc = grep_array('fc_mapping.xml', 'ConnectingVirtualSlotNumber')
 
-i = 0 # index for looping through all partition mappings
+log("local_partition_fc: " + str(local_partition_fc) +"\n")
+log("local_slot_fc: " + str(local_slot_fc) +"\n")
+log("remote_partition_fc: " + str(remote_partition_fc) +"\n")
+log("remote_slot_fc: " + str(remote_slot_fc) +"\n")
 
 fc_header="VIOS Name            Slot       Client              "
 divider="-------------------------------------------------"
@@ -1365,6 +1385,7 @@ format="%-20s %-10s %-20s "
 write(fc_header)
 write(divider)
 
+i = 0 # index for looping through all partition mappings
 for partition in local_partition_fc:
     if partition == vios1_partitionid:
         write(format %(vios1_name, local_slot_fc[i], id_to_name[remote_partition_fc[i]]))
@@ -1516,7 +1537,7 @@ write("\nSEA VALIDATION:")
 
 # Check each VIOS UUID and see if we can grab the <SharedEthernetAdapters tag
 # this means that SEA is configured
-write("Checking to see if SEA is configured for VIOS:")
+write("Checking to see if SEA is configured for %s:" %(vios1_name))
 
 # Get network info for VIOS1, write to network1.xml
 try:
@@ -1536,6 +1557,7 @@ else:
 
 
 if vios_nb > 1:
+    write("Checking to see if SEA is configured for %s:" %(vios2_name))
     # Get network info for VIOS2, write to network2.xml
     try:
         get_network_info(session_key, hmc_ip, vios2_uuid, 'network2.xml')
@@ -1605,14 +1627,14 @@ if vios1_ha == "auto":
     # ssh into vios1
     cmd = "/usr/lpp/bos.sysmgt/nim/methods/c_rsh %s.aus.stglabs.ibm.com \"/bin/entstat -d ent7\" | grep '    State:' | sed -e 's/  State://g' |  sed -e 's/ //g'" %(vios1_name)
     vios1_state = os.popen(cmd).read()
-    write("VIOS1 %s state: %s." %(vios1_SEA, vios1_state))
+    write("VIOS1 %s %s state: %s" %(vios1_name, vios1_SEA, vios1_state))
 
 if vios_nb > 1:
     if vios2_ha == "auto":
         # ssh into vios2
         cmd = "/usr/lpp/bos.sysmgt/nim/methods/c_rsh %s.aus.stglabs.ibm.com \"/bin/entstat -d ent7\" | grep '    State:' | sed -e 's/  State://g' |  sed -e 's/ //g'" %(vios2_name)
         vios2_state = os.popen(cmd).read()
-        write("VIOS2 %s state: %s." %(vios2_SEA, vios2_state))
+        write("VIOS2 %s %s state: %s" %(vios2_name, vios2_SEA, vios2_state))
 
 
 header = "VIOS                 SEA Device Name           State  "
@@ -1626,10 +1648,10 @@ if vios_nb > 1:
     write(format %(vios2_name, vios2_SEA, vios2_state))
 
 if vios1_state == "STANDBY":
-    write("WARNING: VIOS1 State should be BACKUP instead of STANDBY.", lvl=0)
+    write("WARNING: VIOS1 %s State should be BACKUP instead of STANDBY." %(vios1_name), lvl=0)
 if vios_nb > 1:
     if vios2_state == "STANDBY":
-        write("WARNING: VIOS2 State should be BACKUP instead of STANDBY.", lvl=0)
+        write("WARNING: VIOS2 %s State should be BACKUP instead of STANDBY." %(vios2_name), lvl=0)
 
 # Pass conditions
 # TBC - how to handle this for only one VIOS
@@ -1663,7 +1685,8 @@ if (vios1_state == "STANDBY") and (vios2_state == "STANDBY"):
     num_hc_fail += 1
 
 remove('network1.xml')
-remove('network2.xml')
+if vios_nb > 1:
+    remove('network2.xml')
 
 
 #######################################################
@@ -1736,10 +1759,8 @@ if vnic_configured == 1:
         fail_msg = open('vnic_fails.txt', 'r')
         content = fail_msg.read()
         write(content, lvl=0)
-
-# VNIC not configured
 else:
-    write("VNIC Configuration Not Detected.", lvl=0)
+    write("VNIC Configuration Not Detected.")
 
 remove('vnic_fails.txt')
 #remove('vnic.xml')
