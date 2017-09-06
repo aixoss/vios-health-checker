@@ -87,7 +87,8 @@ def remove(path):
     try:
         log("removing file: %s\n" %(path))
         if os.path.exists(path):
-            os.remove(path)
+            log("")
+            #os.remove(path)
         else:
             log("file %s does not exists.\n" %(path))
     except OSError, e:
@@ -312,6 +313,7 @@ def get_session_key (hmc_ip, user_id, password):
     fields = '<LogonRequest schemaVersion=\"V1_0\" xmlns=\"http://www.ibm.com/xmlns/systems/power/firmware/web/mc/2012_10/\"  xmlns:mc=\"http://www.ibm.com/xmlns/systems/power/firmware/web/mc/2012_10/\"> <UserID>%s</UserID> <Password>%s</Password></LogonRequest>' %(user_id, password)
     hdrs = ['Content-Type: application/vnd.ibm.powervm.web+xml; type=LogonRequest']
 
+    log("curl request on: %s\n" %(url))
     try:
         c = pycurl.Curl()
         c.setopt(c.HTTPHEADER, hdrs)
@@ -342,23 +344,8 @@ def print_uuid(hmc_ip, sess_key, arg):
     log("print_uuid: hmc_ip=%s, sess_key=%s, arg=%s\n" %(hmc_ip, sess_key, arg))
     rc = 0
 
-    try:
-        log("writing file: systems.xml\n")
-        f = open('systems.xml', 'wb')
-    except IOError, e:
-        write("ERROR: Failed to create file %s: %s." %(e.filename, e.strerror), lvl=0)
-        sys.exit(3)
-
     url = "https://%s:12443/rest/api/uom/ManagedSystem" %(hmc_ip)
-    hdrs = ["X-API-Session:%s" %(sess_key)]
-
-    c = pycurl.Curl()
-    c.setopt(c.HTTPHEADER, hdrs)
-    c.setopt(c.URL, url)
-    c.setopt(c.SSL_VERIFYPEER, False)
-    c.setopt(c.WRITEDATA, f)
-    c.perform()
-    f.close()
+    curl_request(session_key, hmc_ip, url, 'systems.xml')
 
     # Mapped managed systems
     m, vios_part = managed_system_discovery('systems.xml', sess_key, hmc_ip)
@@ -460,10 +447,8 @@ def awk (filename, tag1, tag2):
 
 ### Pycurl ###
 
-# Find clients of a VIOS
-# Inputs: session key, HMC IP address, VIOS UUID, file name
-# No output, writes data to file
-def get_client_info (session_key, hmc_ip, vios_uuid, filename):
+def curl_request(session_key, hmc_ip, url, filename):
+    log("Curl request, file: %s, url: %s\n" %(filename, url))
     try:
         log("writing file: %s\n" %(filename))
         f = open(filename, 'wb')
@@ -471,163 +456,69 @@ def get_client_info (session_key, hmc_ip, vios_uuid, filename):
         write("ERROR: Failed to create file %s: %s." %(e.filename, e.strerror), lvl=0)
         sys.exit(3)
 
-    url = "https://%s:12443/rest/api/uom/VirtualIOServer/%s" %(hmc_ip, vios_uuid)
     hdrs = ["X-API-Session:%s" %(session_key)]
-
-    c = pycurl.Curl()
-    c.setopt(c.HTTPHEADER, hdrs)
-    c.setopt(c.URL, url)
-    c.setopt(c.SSL_VERIFYPEER, False)
-    c.setopt(c.WRITEDATA, f)
-    c.perform()
+    try:
+        c = pycurl.Curl()
+        c.setopt(c.HTTPHEADER, hdrs)
+        c.setopt(c.URL, url)
+        c.setopt(c.SSL_VERIFYPEER, False)
+        c.setopt(c.WRITEDATA, f)
+        c.perform()
+    except pycurl.error, error:
+        errno, errstr = error
+        write("ERROR: Request to %s failed:\n %s." %(url, errstr), lvl=0)
+        sys.exit(3)
     f.close()
+
+# Find clients of a VIOS
+# Inputs: session key, HMC IP address, VIOS UUID, file name
+# No output, writes data to file
+def get_client_info (session_key, hmc_ip, vios_uuid, filename):
+    url = "https://%s:12443/rest/api/uom/VirtualIOServer/%s" %(hmc_ip, vios_uuid)
+    curl_request(session_key, hmc_ip, url, filename)
 
 # Get VIOS UUID and ID info
 # Inputs: session key, HMC IP address, file name
 # No output, writes data to file
 def get_vios_info (session_key, hmc_ip, filename):
-    try:
-        log("writing file: %s\n" %(filename))
-        f = open(filename, 'wb')
-    except IOError, e:
-        write("ERROR: Failed to create file %s: %s." %(e.filename, e.strerror), lvl=0)
-        sys.exit(3)
-
     url = "https://%s:12443/rest/api/uom/VirtualIOServer" %(hmc_ip)
-    hdrs = ["X-API-Session:%s" %(session_key)]
-
-    c = pycurl.Curl()
-    c.setopt(c.HTTPHEADER, hdrs)
-    c.setopt(c.URL, url)
-    c.setopt(c.SSL_VERIFYPEER, False)
-    c.setopt(c.WRITEDATA, f)
-    c.perform()
-    f.close()
+    curl_request(session_key, hmc_ip, url, filename)
 
 # Find LPARs of a managed system
 # Inputs: session key, HMC IP address, managed system UUID, file name
 # No output, writes data to file
 def get_managed_system_lpar (session_key, hmc_ip, managed_system_uuid, filename):
-    try:
-        log("writing file: %s\n" %(filename))
-        f = open(filename, 'wb')
-    except IOError, e:
-        write("ERROR: Failed to create file %s: %s." %(e.filename, e.strerror), lvl=0)
-        sys.exit(3)
-
     url = "https://%s:12443/rest/api/uom/ManagedSystem/%s/LogicalPartition" %(hmc_ip, managed_system_uuid)
-    hdrs = ["X-API-Session:%s" %(session_key)]
-
-    c = pycurl.Curl()
-    c.setopt(c.HTTPHEADER, hdrs)
-    c.setopt(c.URL, url)
-    c.setopt(c.SSL_VERIFYPEER, False)
-    c.setopt(c.WRITEDATA, f)
-    c.perform()
-    f.close()
+    curl_request(session_key, hmc_ip, url, filename)
 
 # Get VSCSI info
 # Inputs: session key, HMC IP address, VIOS UUID, file name
 # No output, writes data to file
 def get_vscsi_info (session_key, hmc_ip, vios_uuid, filename):
-    try:
-        log("writing file: %s\n" %(filename))
-        f = open(filename, 'wb')
-    except IOError, e:
-        write("ERROR: Failed to create file %s: %s." %(e.filename, e.strerror), lvl=0)
-        sys.exit(3)
-
     url = "https://%s:12443/rest/api/uom/VirtualIOServer/%s?group=ViosSCSIMapping" %(hmc_ip, vios_uuid)
-    hdrs = ["X-API-Session:%s" %(session_key)]
-
-    c = pycurl.Curl()
-    c.setopt(c.HTTPHEADER, hdrs)
-    c.setopt(c.URL, url)
-    c.setopt(c.SSL_VERIFYPEER, False)
-    c.setopt(c.WRITEDATA, f)
-    c.perform()
-    f.close()
+    curl_request(session_key, hmc_ip, url, filename)
 
 # Get fibre channel mapping for VIOS
 # Inputs: session key, HMC IP address, VIOS UUID, file name
 # No output, writes data to file
 def get_fc_mapping_vios (session_key, hmc_ip, vios_uuid, filename):
-    try:
-        log("writing file: %s\n" %(filename))
-        f = open(filename, 'wb')
-    except IOError, e:
-        write("ERROR: Failed to create file %s: %s." %(e.filename, e.strerror), lvl=0)
-        sys.exit(3)
-
     url = "https://%s:12443/rest/api/uom/VirtualIOServer/%s?group=ViosFCMapping" %(hmc_ip, vios_uuid)
-    hdrs = ["X-API-Session:%s" %(session_key)]
-
-    c = pycurl.Curl()
-    c.setopt(c.HTTPHEADER, hdrs)
-    c.setopt(c.URL, url)
-    c.setopt(c.SSL_VERIFYPEER, False)
-    c.setopt(c.WRITEDATA, f)
-    c.perform()
-    f.close()
+    curl_request(session_key, hmc_ip, url, filename)
 
 # Get info about LPAR to see network connections
 # Inputs: session key, HMC IP address, LPAR, file name
 # No output, writes data to file
 def get_lpar_info (session_key, hmc_ip, lpar, filename):
-    try:
-        log("writing file: %s\n" %(filename))
-        f = open(filename, 'wb')
-    except IOError, e:
-        write("ERROR: Failed to create file %s: %s." %(e.filename, e.strerror), lvl=0)
-        sys.exit(3)
-
     url = "https://%s:12443/rest/api/uom/LogicalPartition/%s/VirtualFibreChannelClientAdapter" %(hmc_ip, lpar)
-    hdrs = ["X-API-Session:%s" %(session_key)]
-    c = pycurl.Curl()
-    c.setopt(c.HTTPHEADER, hdrs)
-    c.setopt(c.URL, url)
-    c.setopt(c.SSL_VERIFYPEER, False)
-    c.setopt(c.WRITEDATA, f)
-    c.perform()
-    f.close()
+    curl_request(session_key, hmc_ip, url, filename)
 
 def get_network_info (session_key, hmc_ip, vios_uuid, filename):
-    try:
-        log("writing file: %s\n" %(filename))
-        f = open(filename, 'wb')
-    except IOError, e:
-        write("ERROR: Failed to create file %s: %s." %(e.filename, e.strerror), lvl=0)
-        sys.exit(3)
-
     url = "https://%s:12443/rest/api/uom/VirtualIOServer/%s?group=ViosNetwork" %(hmc_ip, vios_uuid)
-    hdrs = ["X-API-Session:%s" %(session_key)]
-
-    c = pycurl.Curl()
-    c.setopt(c.HTTPHEADER, hdrs)
-    c.setopt(c.URL, url)
-    c.setopt(c.SSL_VERIFYPEER, False)
-    c.setopt(c.WRITEDATA, f)
-    c.perform()
-    f.close()
+    curl_request(session_key, hmc_ip, url, filename)
 
 def get_vnic_info (session_key, hmc_ip, uuid, filename):
-    try:
-        log("writing file: %s\n" %(filename))
-        f = open(filename, 'wb')
-    except IOError, e:
-        write("ERROR: Failed to create file %s: %s." %(e.filename, e.strerror), lvl=0)
-        sys.exit(3)
-
     url = "https://%s:12443/rest/api/uom/LogicalPartition/%s/VirtualNICDedicated" %(hmc_ip, uuid)
-    hdrs = ["X-API-Session:%s" %(session_key)]
-
-    c = pycurl.Curl()
-    c.setopt(c.HTTPHEADER, hdrs)
-    c.setopt(c.URL, url)
-    c.setopt(c.SSL_VERIFYPEER, False)
-    c.setopt(c.WRITEDATA, f)
-    c.perform()
-    f.close()
+    curl_request(session_key, hmc_ip, url, filename)
 
 def usage():
     write("""
@@ -781,30 +672,20 @@ if action == "list":
 # Get name and partition ID of each VIOS then filter
 # the ones of interest
 #######################################################
+
+write("\nFind VIOS(es) Name, IP Address, ID, UUID\n")
 # Find clients of VIOS1, write data to vios1_only.xml
-write("\nFind clients of VIOS1: %s\n" %(vios1_uuid))
-try:
-    get_client_info(session_key, hmc_ip, vios1_uuid, 'vios1_only.xml')
-except:
-    write("ERROR: Request to https://$%s:12443/rest/api/uom/VirtualIOServer/%s failed." %(hmc_ip, vios1_uuid), lvl=0)
-    sys.exit(3)
+write("\nCollect info on clients of VIOS1: %s\n" %(vios1_uuid))
+get_client_info(session_key, hmc_ip, vios1_uuid, 'vios1_only.xml')
 
 if vios_nb > 1:
     # Find clients of VIOS2, write data to vios2_only.xml
-    write("\nFind clients of VIOS2: %s\n" %(vios2_uuid))
-    try:
-        get_client_info(session_key, hmc_ip, vios2_uuid, 'vios2_only.xml')
-    except:
-        write("ERROR: Request to https://$%s:12443/rest/api/uom/VirtualIOServer/%s failed." %(hmc_ip, vios2_uuid), lvl=0)
-        sys.exit(3)
+    write("\nCollect info on clients of VIOS2: %s\n" %(vios2_uuid))
+    get_client_info(session_key, hmc_ip, vios2_uuid, 'vios2_only.xml')
 
 # Find UUID and IP addresses of VIOSes, write data to vios_info.xml
-write("\nFind the UUID and IP address of the VIOS(es)\n")
-try:
-    get_vios_info(session_key, hmc_ip, 'vios_info.xml')
-except:
-    write("ERROR: Request to https://$%s:12443/rest/api/uom/VirtualIOServer failed." %(hmc_ip), lvl=0)
-    sys.exit(3)
+write("\nCollect info on the VIOS(es)\n")
+get_vios_info(session_key, hmc_ip, 'vios_info.xml')
 
 # Grab all UUIDs, names, and partition IDs from xml doc and map the names in
 # order to get UUID to name mapping as well as partition ID
@@ -954,11 +835,7 @@ remove('vios_info.xml')
 #######################################################
 # Get managed system LPAR info, write data to lpar_info.xml
 log("\nGetting managed system LPAR info")
-try:
-    get_managed_system_lpar(session_key, hmc_ip, managed_system_uuid, 'lpar_info.xml')
-except:
-    write("ERROR: Request to https://$%s:12443/rest/api/uom/ManagedSystem/$%s/LogicalPartition failed." %(hmc_ip, managed_system_uuid), lvl=0)
-    sys.exit(3)
+get_managed_system_lpar(session_key, hmc_ip, managed_system_uuid, 'lpar_info.xml')
 
 lpar_id = []
 lpar_name = []
@@ -1007,13 +884,14 @@ active_client_name = []
 diff_clients = []
 
 # Find configured clients of VIOS1
+# VRO - ConnectingPartitionID is present in VirtualFibreChannelMapping elem
 active_client_id_1 = awk('vios1_only.xml', 'ServerAdapter', 'ConnectingPartitionID')
-log("active_client_id_1: " + str(active_client_id_1))
+log("active_client_id_1: " + str(active_client_id_1) + "\n")
 
 if vios_nb > 1:
     # Find configured clients of VIOS2
     active_client_id_2 = awk('vios2_only.xml', 'ServerAdapter', 'ConnectingPartitionID')
-    log("active_client_id_2: " + str(active_client_id_2))
+    log("active_client_id_2: " + str(active_client_id_2) + "\n")
 
     # Check that both VIOSes have the same clients
     # if they do not, all health-checks will fail and we cannot continue the program
@@ -1281,7 +1159,7 @@ if vios_nb > 1:
         i += 3
     
     if len(backing_device_id_vscsi) == 0:
-        write("WARNING: no disks configured with this system: %s." %(vios2_name), lvl=0)
+        write("WARNING: no VSCSI disks configured on %s." %(vios2_name))
     
     i = 0 # index for looping through all partition mappings
     j = 0 # index for looping through backing devices
@@ -1353,11 +1231,7 @@ if vios_nb > 1:
 write("\nFC MAPPINGS for %s:" %(vios1_name))
 
 # Find VIOS fibre channel mappings, write data to fc_mapping.xml
-try:
-    get_fc_mapping_vios(session_key, hmc_ip, vios1_uuid, 'fc_mapping.xml')
-except:
-    write("ERROR: Request to https://%s:12443/rest/api/uom/VirtualIOServer/%s?group=ViosFCMapping failed." %(hmc_ip, vios1_uuid), lvl=0)
-    sys.exit(3)
+get_fc_mapping_vios(session_key, hmc_ip, vios1_uuid, 'fc_mapping.xml')
 
 
 local_partition_fc = []
@@ -1402,11 +1276,7 @@ if vios_nb > 1:
     write("\nFC MAPPINGS for %s:" %(vios2_name))
     
     # Find VIOS fibre channel mappings, write data to fc_mapping.xml
-    try:
-        get_fc_mapping_vios(session_key, hmc_ip, vios2_uuid, 'fc_mapping.xml')
-    except:
-        write("ERROR: Request to https://%s:12443/rest/api/uom/VirtualIOServer/%s?group=ViosFCMapping failed." %(hmc_ip, vios2_uuid), lvl=0)
-        sys.exit(3)
+    get_fc_mapping_vios(session_key, hmc_ip, vios2_uuid, 'fc_mapping.xml')
     
     # Clear arrays before using again
     del local_partition_fc[:]
@@ -1461,13 +1331,9 @@ write("\nNPIV Path Validation:")
 
 for lpar in active_client_uuid:
     # Get LPAR info, write data to fc_mapping2.xml
-    try:
-        get_lpar_info(session_key, hmc_ip, lpar, 'fc_mapping2.xml')
-        cmd = "cat %s > output" %(fc_mapping2.xml)
-        os.system(cmd)
-    except:
-        write("ERROR: Request to https://%s:12443/rest/api/uom/LogicalPartition/%s/VirtualFibreChannelClientAdapter failed." %(hmc_ip, lpar), lvl=0)
-        sys.exit(3)
+    get_lpar_info(session_key, hmc_ip, lpar, 'fc_mapping2.xml')
+    cmd = "cat %s > output" %(fc_mapping2.xml)   # TBC VRO - what's that ??
+    os.system(cmd)
 
     #Create a list of fibre channel IDs
     fc_ids = grep_array('fc_mapping2.xml', 'LocalPartitionID')
@@ -1540,11 +1406,7 @@ write("\nSEA VALIDATION:")
 write("Checking to see if SEA is configured for %s:" %(vios1_name))
 
 # Get network info for VIOS1, write to network1.xml
-try:
-    get_network_info(session_key, hmc_ip, vios1_uuid, 'network1.xml')
-except:
-    write("ERROR: Request to https://%s:12443/rest/api/uom/VirtualIOServer/%s?group=ViosNetwork failed." %(hmc_ip, vios1_uuid), lvl=0)
-    sys.exit(3)
+get_network_info(session_key, hmc_ip, vios1_uuid, 'network1.xml')
 
 # Check VIOS1 for SEA
 if grep_check('network1.xml', 'SharedEthernetAdapters'):
@@ -1559,11 +1421,7 @@ else:
 if vios_nb > 1:
     write("Checking to see if SEA is configured for %s:" %(vios2_name))
     # Get network info for VIOS2, write to network2.xml
-    try:
-        get_network_info(session_key, hmc_ip, vios2_uuid, 'network2.xml')
-    except:
-        write("ERROR: Request to https://%s:12443/rest/api/uom/VirtualIOServer/%s?group=ViosNetwork failed." %(hmc_ip, vios2_uuid), lvl=0)
-        sys.exit(3)
+    get_network_info(session_key, hmc_ip, vios2_uuid, 'network2.xml')
 
     # Check VIOS2 for SEA
     if grep_check('network2.xml', 'SharedEthernetAdapters'):
