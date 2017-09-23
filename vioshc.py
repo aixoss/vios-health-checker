@@ -24,6 +24,7 @@ import re
 import pycurl
 import xml.etree.cElementTree as ET
 import socket
+import cStringIO
 
 
 #######################################################
@@ -59,7 +60,6 @@ num_hc_pass = 0
 total_hc = 0
 
 # File name
-filename_vios_info = 'vios_info.xml'
 filename_session_key = 'sessionkey.xml'
 filename_systems = 'systems.xml'
 filename_vios1 = 'vios1_only.xml'   # check managed_system_discovery() if you change this
@@ -349,7 +349,10 @@ def managed_system_discovery(xml_file, hmc_info):
         filename = "vios%s.xml" %(i)
         i += 1
         touch(filename)
-        get_client_info(hmc_info, uuid, filename)
+        rc = get_vios_info(hmc_info, uuid, filename)
+        if rc != 0:
+            write("ERROR: Failed to get VIOS information %s: %s." %(filename, rc[1]), lvl=0)
+            sys.exit(3)
 
         # Parse file for partition IDs
         tree = ET.ElementTree(file=filename)
@@ -425,7 +428,12 @@ def print_uuid(hmc_info, arg, filename):
     rc = 0
 
     url = "https://%s:12443/rest/api/uom/ManagedSystem" %(hmc_info['hostname'])
-    curl_request(hmc_info['session_key'], url, filename)
+    rc = curl_request(hmc_info['session_key'], url, filename)
+    if rc != 0:
+        write("ERROR: Cannot get session key for '%s': %s" %(hmc_info['hostname'], rc[1]), lvl=0)
+        remove(filename)
+        return rc[0]
+
 
     # Mapped managed systems
     m, vios_part = managed_system_discovery(filename, sess_key, hmc_info)
@@ -524,6 +532,74 @@ def awk(filename, tag1, tag2):
                     arr.append(child.text)
     return arr
 
+# Parse VirtualIOServer XML file to build the vios_info hash
+# Inputs: vios hash, file name, vios uuid
+# Output: vios name use in hash if success,
+#         prints error message and exit upon error
+def build_vios_info(vios_info, filename, vios_uuid):
+    ns = { 'Atom': 'http://www.w3.org/2005/Atom', \
+           'vios': 'http://www.ibm.com/xmlns/systems/power/firmware/uom/mc/2012_10/' }
+    try:
+        e_tree = ET.parse(filename)
+    except IOError, e:
+        write("ERROR: Failed to parse %s for %s: %s." %(e.filename, vios_uuid, e.strerror), lvl=0)
+        remove(filename)
+        sys.exit(3)
+    except ElementTree.ParseError, e:
+        write("ERROR: Failed to parse %s for %s: %s" %(filename, vios_uuid, e), lvl=0)
+        remove(filename)
+        sys.exit(3)
+    e_root = e_tree.getroot()
+
+    #NOTE: Some VIOSes do not return PartitionName element
+    #      so in that case we use the short hostname as hash
+    #      key and replace partition name by this short hostname
+
+    # Get element: ResourceMonitoringIPAddress
+    e_RMIPAddress = e_root.find("Atom:content/vios:VirtualIOServer/vios:ResourceMonitoringIPAddress", ns)
+    if e_RMIPAddress is None:
+        write("ERROR: ResourceMonitoringIPAddress element not found in file %s" %(filename, vios_uuid), lvl=0)
+        sys.exit(3)
+
+    # Get the hostname 
+    (hostname, aliases, ip_list) = get_hostname(e_RMIPAddress.text)
+    vios_name = hostname.split(".")[0]
+
+    vios_info[vios_name] = {}
+    vios_info[vios_name]['uuid'] = vios_uuid
+    vios_info[vios_name]['hostname'] = hostname
+    vios_info[vios_name]['ip'] = e_RMIPAddress.text
+    
+    # Get element: PartitionName
+    e_PartionName = e_root.find("Atom:content/vios:VirtualIOServer/vios:PartitionName", ns)
+    if e_PartionName is None:
+        write("ERROR: PartitionName element not found in file %s" %(filename, vios_uuid), lvl=0)
+        sys.exit(3)
+    vios_info[vios_name]['partition_name'] = e_PartionName.text
+
+    # Get element: PartitionID
+    e_PartionID = e_root.find("Atom:content/vios:VirtualIOServer/vios:PartitionID", ns)
+    if e_PartionID is None:
+        write("ERROR: PartitionID element not found in file %s" %(filename, vios_uuid), lvl=0)
+        sys.exit(3)
+    vios_info[vios_name]['id'] = e_PartionID.text
+
+    # Get element: PartitionState
+    e_PartitionState = e_root.find("Atom:content/vios:VirtualIOServer/vios:PartitionState", ns)
+    if e_PartitionState is None:
+        write("ERROR: PartitionState element not found in file %s" %(filename, vios_uuid), lvl=0)
+        sys.exit(3)
+    vios_info[vios_name]['partition_state'] = e_PartitionState.text
+
+    # Get element: ResourceMonitoringControlState
+    e_RMCState = e_root.find("Atom:content/vios:VirtualIOServer/vios:ResourceMonitoringControlState", ns)
+    if e_RMCState is None:
+        write("ERROR: ResourceMonitoringControlState element not found in file %s" %(filename, vios_uuid), lvl=0)
+        sys.exit(3)
+    vios_info[vios_name]['control_state'] = e_RMCState.text
+
+    return vios_name
+
 
 ### c_rsh functions ###
 
@@ -597,61 +673,77 @@ def curl_request(sess_key, url, filename):
         sys.exit(3)
 
     hdrs = ["X-API-Session:%s" %(sess_key)]
+    hdr = cStringIO.StringIO()
+
     try:
         c = pycurl.Curl()
         c.setopt(c.HTTPHEADER, hdrs)
         c.setopt(c.URL, url)
         c.setopt(c.SSL_VERIFYPEER, False)
         c.setopt(c.WRITEDATA, f)
+        c.setopt(pycurl.HEADERFUNCTION, hdr.write)
         c.perform()
     except pycurl.error, (errno, strerror):
-        write("ERROR: Request to %s failed:\n %s." %(url, strerror), lvl=0)
-        sys.exit(3)
+        write("ERROR: Request to %s failed: %s." %(url, strerror), lvl=0)
+        f.close()
+        return 1, strerror
+
     f.close()
     # TBC - uncomment the 2 following lines for debug
     #f = open(filename, 'r')
     #log("\n### File %s content ###%s### End of file %s ###\n" %(filename, f.read(), filename))
 
+    # Get the http code and message to precise the error
+    status_line = hdr.getvalue().splitlines()[0]
+    m = re.match(r'HTTP\/\S*\s*(\d+)\s*(.*)\s*$', status_line)
+    if m:
+        http_code = str(m.group(1))
+        http_message = " %s" %(str(m.group(2)))
+    else:
+        http_code = c.getinfo(pycurl.HTTP_CODE)
+        http_message = ""
+
+    if http_code != "200":
+        log("Curl retuned '%s%s' for request '%s'\n" %(http_code, http_message, url))
+        return http_code, http_message
+
+    return 0
+
 # Find clients of a VIOS
 # No output, writes data to file
-def get_client_info(hmc_info, vios_uuid, filename):
+def get_vios_info(hmc_info, vios_uuid, filename):
     url = "https://%s:12443/rest/api/uom/VirtualIOServer/%s" %(hmc_info['hostname'], vios_uuid)
-    curl_request(hmc_info['session_key'], url, filename)
-
-# Get VIOS UUID and ID info
-def get_vios_info(hmc_info, filename):
-    url = "https://%s:12443/rest/api/uom/VirtualIOServer" %(hmc_info['hostname'])
-    curl_request(hmc_info['session_key'], url, filename)
+    return curl_request(hmc_info['session_key'], url, filename)
 
 # Find LPARs of a managed system
 def get_managed_system_lpar(hmc_info, managed_system_uuid, filename):
     url = "https://%s:12443/rest/api/uom/ManagedSystem/%s/LogicalPartition" %(hmc_info['hostname'], managed_system_uuid)
-    curl_request(hmc_info['session_key'], url, filename)
+    return curl_request(hmc_info['session_key'], url, filename)
 
 # Get VSCSI info
 def get_vscsi_info(hmc_info, vios_uuid, filename):
     url = "https://%s:12443/rest/api/uom/VirtualIOServer/%s?group=ViosSCSIMapping" %(hmc_info['hostname'], vios_uuid)
-    curl_request(hmc_info['session_key'], url, filename)
+    return curl_request(hmc_info['session_key'], url, filename)
 
 # Get fibre channel mapping for VIOS
 def get_fc_mapping_vios(hmc_info, vios_uuid, filename):
     url = "https://%s:12443/rest/api/uom/VirtualIOServer/%s?group=ViosFCMapping" %(hmc_info['hostname'], vios_uuid)
-    curl_request(hmc_info['session_key'], url, filename)
+    return curl_request(hmc_info['session_key'], url, filename)
 
 # Get info about LPAR to see network connections
-def get_lpar_info(hmc_info, lpar, filename):
+def get_vfc_client_adapter(hmc_info, lpar, filename):
     url = "https://%s:12443/rest/api/uom/LogicalPartition/%s/VirtualFibreChannelClientAdapter" %(hmc_info['hostname'], lpar)
-    curl_request(hmc_info['session_key'], url, filename)
+    return curl_request(hmc_info['session_key'], url, filename)
 
 # Get info about VIOS Network connections 
 def get_network_info(hmc_info, vios_uuid, filename):
     url = "https://%s:12443/rest/api/uom/VirtualIOServer/%s?group=ViosNetwork" %(hmc_info['hostname'], vios_uuid)
-    curl_request(hmc_info['session_key'], url, filename)
+    return curl_request(hmc_info['session_key'], url, filename)
 
 # Get info about VIOS Virtual NIC Dedicated adapter
 def get_vnic_info(hmc_info, uuid, filename):
     url = "https://%s:12443/rest/api/uom/LogicalPartition/%s/VirtualNICDedicated" %(hmc_info['hostname'], uuid)
-    curl_request(hmc_info['session_key'], url, filename)
+    return curl_request(hmc_info['session_key'], url, filename)
 
 
 #===============================================================================
@@ -835,181 +927,65 @@ if action == "list":
 # Get name and partition ID of each VIOS then filter
 # the ones of interest
 #######################################################
-
 write("Find VIOS(es) Name, IP Address, ID, UUID")
+
 # Find clients of VIOS1, write data to file
 write("Collect info on clients of VIOS1: %s" %(vios1_uuid))
-get_client_info(hmc_info, vios1_uuid, filename_vios1)
+rc1 = get_vios_info(hmc_info, vios1_uuid, filename_vios1)
+if rc1 != 0:
+    write("ERROR: Failed to collect vios %s info: %s" %(vios1_uuid, rc1[1]), lvl=0)
+    rc = rc1[0]
 
 if vios_num > 1:
     # Find clients of VIOS2, write data to file
     write("Collect info on clients of VIOS2: %s" %(vios2_uuid))
-    get_client_info(hmc_info, vios2_uuid, filename_vios2)
-
-# Find UUID and IP addresses of VIOSes, write data to file
-write("Collect info on the VIOS(es)")
-get_vios_info(hmc_info, filename_vios_info)
-
-# Grab all UUIDs, names, and partition IDs from xml doc and map the names in
-# order to get UUID to name mapping as well as partition ID
-vios_uuid_list = []
-vios_name_list = []
-vios_partitionid_list = []
-vios_ip_list = []
-vios_partition_state_list = []
-vios_control_state_list = []
-
-# Create list of partition UUIDs
-vios_uuid_list = grep_array(filename_vios_info, 'PartitionUUID')
-if len(vios_uuid_list) == 0:
-    write("ERROR: Unable to detect any VIOS partition UUIDs. Exiting Now.", lvl=0)
-    sys.exit(2)
-
-# Check the user specified the right uuid
-rc = 0
-if vios1_uuid not in vios_uuid_list:
-    write("ERROR: Unable to find VIOS with UUID %s." %(vios2_uuid), lvl=0)
-    rc += 1
-if vios_num > 1 and vios2_uuid not in vios_uuid_list:
-    write("ERROR: Unable to find VIOS with UUID %s." %(vios2_uuid), lvl=0)
-    rc += 1
+    rc1 = get_vios_info(hmc_info, vios2_uuid, filename_vios2)
+    if rc1 != 0:
+        write("ERROR: Failed to collect vios %s info: %s" %(vios1_uuid, rc1[1]), lvl=0)
+        rc = rc1[0]
 if rc != 0:
-    remove(filename_vios_info)
     sys.exit(2)
 
-# Create list of partition names
-# NOTE: some VIOSes do not return PartitionName elements
-name_list = []
-name_list = grep_array(filename_vios_info, 'PartitionName')
-for name in name_list:
-    if name not in vios_name_list:
-        vios_name_list.append(name)
-if len(vios_name_list) == 0:
-    write("WARNING: Unable to detect any VIOS partition names. This may affect the the output of this program.", lvl=0)
+# Parse vios xml file and build the hash, exit upon error
+vios1_name = build_vios_info(vios_info, filename_vios1, vios1_uuid)
+vios_info[vios1_name]['role'] = 'primary'
+vios2_name = build_vios_info(vios_info, filename_vios2, vios2_uuid)
+vios_info[vios2_name]['role'] = 'secondary'
 
-# Create a list of partition IDs
-part_id = False
-tree = ET.ElementTree(file=filename_vios_info)
-iter_ = tree.getiterator()
-for elem in iter_:
-    if part_id and ( re.sub(r'{[^>]*}', "", elem.tag) == 'PartitionID'):
-        vios_partitionid_list.append(elem.text)
-        part_id = False
-    if re.sub(r'{[^>]*}', "", elem.tag) == 'PartitionCapabilities':
-        part_id = True
-if len(vios_partitionid_list) == 0:
-    write("WARNING: Unable to detect any VIOS partition IDs. This may affect the the output of this program.", lvl=0)
-
-# Create list of IP addresses
-vios_ip_list = grep_array(filename_vios_info, 'ResourceMonitoringIPAddress')
-if len(vios_ip_list) == 0:
-    write("ERROR: Unable to detect any VIOS partition IP addresses. Exiting Now.", lvl=0)
-    sys.exit(2)
-
-# Create list of partition states
-vios_partition_state_list = grep_array(filename_vios_info, 'PartitionState')
-if len(vios_partition_state_list) == 0:
-    write("ERROR: Unable to detect partition states. Exiting Now.", lvl=0)
-    sys.exit(2)
-
-# Create list of resource monitoring control states
-vios_control_state_list = grep_array(filename_vios_info, 'ResourceMonitoringControlState')
-if len(vios_control_state_list) == 0:
-    write("ERROR: Unable to detect partition control states. Exiting Now.", lvl=0)
-    sys.exit(2)
-
-# Create new lists with just the info we want - since we have to query all
-# the VIOS in the HMC for the REST API, there is a lot of unnecessary info
-i = 0
-ip_idx = 0
-state_idx = 0
-control_state_idx = 0
+# Log VIOS information
+for vios in vios_info.keys():
+    log("vios: %s, %s\n" %(vios, str(vios_info[vios])))
 
 primary_header = "\nPrimary VIOS Name         IP Address      ID         UUID                "
 backup_header = "\nBackup VIOS Name          IP Address      ID         UUID                "
 divider= "-------------------------------------------------------------------------------------------------"
 format = "%-25s %-15s %-10s %-40s "
 
-for vios in vios_uuid_list:
+for vios in vios_info.keys():
     # If Resource Monitoring Control State is inactive, it will throw off our UUID/IP pairing
-    if (vios_control_state_list[control_state_idx] == "inactive") and \
-        (vios_partition_state_list[state_idx] == "not"):
-        i += 1
-        state_idx += 2
-        control_state_idx += 1
-        continue
-
-    if (vios_control_state_list[control_state_idx] == "inactive") and \
-        (vios_partition_state_list[state_idx] == "running"):
-        i += 1
-        state_idx += 1
-        control_state_idx += 1
+    if (vios_info[vios]['control_state'] == "inactive"):
         continue
 
     # If VIOS is not running, skip it otherwise it will throw off our UUID/IP pairing
-    if vios_partition_state_list[state_idx] == "not":
-        i += 1
-        state_idx += 2
+    if vios_info[vios]['partition_state'] == "not running":
         continue
 
     # Get VIOS1 info (original VIOS)
-    if vios == vios1_uuid:
-        vios1_name = vios_name_list[i]
-        vios_info[vios1_name] = {}
-        vios_info[vios1_name]['id'] = vios_partitionid_list[i]
-        vios_info[vios1_name]['ip'] = vios_ip_list[ip_idx]
-        vios_info[vios1_name]['uuid'] = vios_uuid_list[i]
-        (hostname, aliases, ip_list) = get_hostname(vios_info[vios1_name]['ip'])
-        vios_info[vios1_name]['hostname'] = hostname
+    if vios_info[vios]['role'] == "primary":
         write(primary_header, lvl=0)
-        write(divider, lvl=0)
-        write(format %(vios1_name, \
-                       vios_info[vios1_name]['ip'], \
-                       vios_info[vios1_name]['id'], \
-                       vios_info[vios1_name]['uuid']), lvl=0)
-
-    # Get VIOS2 info (VIOS to take on new clients)
-    if vios == vios2_uuid:
-        vios2_name = vios_name_list[i]
-        vios_info[vios2_name] = {}
-        vios_info[vios2_name]['id'] = vios_partitionid_list[i]
-        vios_info[vios2_name]['ip'] = vios_ip_list[ip_idx]
-        vios_info[vios2_name]['uuid'] = vios_uuid_list[i]
-        (hostname, aliases, ip_list) = get_hostname(vios_info[vios2_name]['ip'])
-        vios_info[vios2_name]['hostname'] = hostname
+    else:
         write(backup_header, lvl=0)
-        write(divider, lvl=0)
-        write(format %(vios2_name, \
-                       vios_info[vios2_name]['ip'], \
-                       vios_info[vios2_name]['id'], \
-                       vios_info[vios2_name]['uuid']), lvl=0)
 
-    control_state_idx += 1
-    state_idx += 1
-    ip_idx += 1
-    i += 1
-
-# Log VIOS information
-for vios in vios_info.keys():
-    log("vios: %s, %s\n" %(vios, str(vios_info[vios])))
-
-rc = 0
-if vios1_name == "":
-    write("ERROR: Unable to find VIOS with UUID %s." %(vios1_uuid), lvl=0)
-    rc += 1
-if vios_num > 1 and vios2_name == "":
-    write("ERROR: Unable to find VIOS with UUID %s." %(vios2_uuid), lvl=0)
-    rc += 1
-if rc != 0:
-    sys.exit(2)
-
-remove(filename_vios_info)
+    write(divider, lvl=0)
+    write(format %(vios_info[vios]['partition_name'], \
+                   vios_info[vios]['ip'], \
+                   vios_info[vios]['id'], \
+                   vios_info[vios]['uuid']), lvl=0)
 
 
 #######################################################
 # Get UUIDs of all LPARs that belong to the managed
 # system that we are interested in
-# i.e., they are specified in vios1_xml and vios2_xml
 #######################################################
 # Get managed system LPAR info, write data to file
 write("Getting managed system LPAR info")
@@ -1428,7 +1404,7 @@ remove(filename_fc_mapping1)
 
 if vios_num > 1:
     #######################################################
-    # Fiber Channel Mapping for VIOS2
+    # Fibre Channel Mapping for VIOS2
     #######################################################
     write("\nFC MAPPINGS for %s:" %(vios2_name))
     
@@ -1468,16 +1444,10 @@ if vios_num > 1:
 
 
 #######################################################
-#NPIV PATH VALIDATION
+# NPIV PATH VALIDATION
+# TODO - The REST API does not send data for this request,
+# the response is: 204 no content 
 #######################################################
-# In order to do this step, we need to generate a pair of authentication keys to
-# allow for automatic login without having to sign in to other vios
-# path validation
-
-###########
-# TODO - cannot get data for fc_mapping2
-# 204 no content response
-###########
 
 fc_ids = []
 drc_list = []
@@ -1489,7 +1459,7 @@ write("\nNPIV Path Validation:")
 # for each active partition, get notzoned info for both vios and check if false
 for id in active_client_id:
     # Get LPAR info, write data to xml file
-    get_lpar_info(hmc_info, lpar_info[id]['uuid'], filename_npiv_mapping)
+    get_vfc_client_adapter(hmc_info, lpar_info[id]['uuid'], filename_npiv_mapping)
     # TBC - uncomment the 2 following lines for debug
     #f = open(filename_npiv_mapping, 'r')
     #log("\n### File %s content ###%s### End of file %s ###\n" %(filename_npiv_mapping, f.read(), filename_npiv_mapping))
@@ -1497,10 +1467,10 @@ for id in active_client_id:
     # Create a list of fibre channel IDs
     fc_ids = grep_array(filename_npiv_mapping, 'LocalPartitionID')
     if len(fc_ids) == 0:
-        write("No FC ID for lpar: %s %s" %(lpar_info[id]['name'], lpar_info[id]['uuid']))
+        write("No vFC client adapter ID for lpar: %s (%s)" %(lpar_info[id]['name'], lpar_info[id]['uuid']))
         continue
     
-    #Create a list of dynamic reconfiguration connectors
+    # Create a list of dynamic reconfiguration connectors
     drc_list = grep_array(filename_npiv_mapping, 'DynamicReconfigurationConnectorName')
     # Create a list of WWPN
     WWPN_list = grep_array(filename_npiv_mapping, 'WWPN')
