@@ -76,8 +76,6 @@ filename_adapter1 = 'adapter1_info.xml'
 filename_adapter2 = 'adapter2_info.xml'
 filename_network1 = 'network1.xml'
 filename_network2 = 'network2.xml'
-filename_sea1 = 'sea1.xml'
-filename_sea2 = 'sea2.xml'
 filename_vnic_info = 'vnic_info.xml'
 filename_msg = 'msg.txt'
 
@@ -112,10 +110,8 @@ def write(txt, lvl=1):
 # Remove file under tmp directory
 def remove(path):
     try:
-        log("removing file: %s\n" %(path))
         if os.path.exists(path):
-            log("")
-            #os.remove(path)
+            os.remove(path)
         else:
             log("file %s does not exists.\n" %(path))
     except OSError, e:
@@ -124,7 +120,6 @@ def remove(path):
 # Remove extra headers from top of XML file
 def format_xml_file(filename):
     try:
-        log("reading file: %s\n" %(filename))
         f = open(filename, 'r+')
     except IOError, e:
         write("ERROR: Failed to create file %s: %s." %(e.filename, e.strerror), lvl=0)
@@ -254,8 +249,7 @@ def get_hostname(host):
 # Input: (str) password file, mananged type, managed hostname
 # Output: (str) decrypted file
 def get_decrypt_file(passwd_file, type, hostname):
-    log("getting %s file for %s %s\n" %(passwd_file, type, hostname))
-    path = ""
+    log("getting decrypt file: %s for %s %s\n" %(passwd_file, type, hostname))
 
     cmd =["/usr/bin/dkeyexch", "-f", passwd_file, "-I", type, "-H", hostname, "-S"]
     (rc, output) = exec_cmd(cmd)
@@ -273,7 +267,6 @@ def get_decrypt_file(passwd_file, type, hostname):
 # Output: (str) username and password
 def get_usr_passwd(decrypt_file):
     try:
-        log("reading file: %s\n" %(decrypt_file))
         f = open(decrypt_file, 'r')
     except IOError, e:
         write("ERROR: Failed to open file %s: %s." %(e.filename, e.strerror), lvl=0)
@@ -311,7 +304,7 @@ def build_managed_system(hmc_info, vios_info, managed_system, xml_file, arg):
                 if child.text in managed_system:
                     continue
                 curr_managed_sys = child.text
-                log("Get managed system UUID: %s\n" %(curr_managed_sys))
+                log("get managed system UUID: %s\n" %(curr_managed_sys))
                 managed_system[curr_managed_sys] = {}
                 managed_system[curr_managed_sys]['serial'] = "Not Found"
                 managed_system[curr_managed_sys]['vios'] = []
@@ -329,6 +322,7 @@ def build_managed_system(hmc_info, vios_info, managed_system, xml_file, arg):
                     serial_string += serial_child.text
             # Adding the serial to the current Managed System
             managed_system[curr_managed_sys]['serial'] = serial_string
+            log("managed system %s has serial: %s\n" %(curr_managed_sys, serial_string))
 
         if re.sub(r'{[^>]*}', "", elem.tag) == "AssociatedVirtualIOServers" and arg == 'a':
             write("Retrieving the VIOS UUIDs")
@@ -356,6 +350,10 @@ def build_managed_system(hmc_info, vios_info, managed_system, xml_file, arg):
                     managed_system[curr_managed_sys]['vios'].append(vios_name)
 
                     remove(filename)
+            log("managed system %s has %d VIOS: %s\n" \
+                %(curr_managed_sys, \
+                len(managed_system[curr_managed_sys]['vios']), \
+                ','.join(managed_system[curr_managed_sys]['vios'])))
     return 0
 
 # Inputs: HMC IP address, user ID, password
@@ -363,7 +361,6 @@ def build_managed_system(hmc_info, vios_info, managed_system, xml_file, arg):
 def get_session_key(hmc_info, filename):
     s_key = ""
     try:
-        log("writing file: %s\n" %(filename))
         f = open(filename, 'wb')
     except IOError, e:
         write("ERROR: Failed to create file %s: %s." %(e.filename, e.strerror), lvl=0)
@@ -391,7 +388,6 @@ def get_session_key(hmc_info, filename):
     # Reopen the file in text mode
     f.close()
     try:
-        log("reading file: %s\n" %(filename))
         f = open(filename, 'r')
     except IOError, e:
         write("ERROR: Failed to create file %s: %s." %(e.filename, e.strerror), lvl=0)
@@ -420,8 +416,6 @@ def print_uuid(hmc_info, vios_info, arg, filename):
     managed_system = {}
     build_managed_system(hmc_info, vios_info, managed_system, filename, arg)
 
-    #if arg == 'm':
-    log("Print only managed systems\n")
     write("\n%-37s    %-22s" %("Managed Systems UUIDs", "Serial"), lvl=0)
     write("-" * 37 + "    " + "-"*22, lvl=0)
     for key in managed_system.keys():
@@ -643,7 +637,6 @@ def get_vios_sea_state(vios_name, vios_sea):
 
     # file to get all SEA info (debug)
     filename = "%s_%s.txt" %(vios_name, vios_sea)
-    log("writing file: %s\n" %(filename))
     try:
         f = open(filename, 'w+')
     except IOError, e:
@@ -661,7 +654,7 @@ def get_vios_sea_state(vios_name, vios_sea):
     found_stat = False
     found_packet = False
     for line in output.rstrip().split('\n'):
-        # file to get all SEA info (debug)
+        # file to get all SEA info (for debug)
         if not (f is None):
             f.write("%s\n" %(line))
 
@@ -687,11 +680,12 @@ def get_vios_sea_state(vios_name, vios_sea):
                 state = match_key.group(1)
                 continue
 
-    log("VIOS: %s adapter: %s state: %s" %(vios_name, vios_sea, state))
-
     if state == "":
         write("ERROR: Failed to get the state of the %s SEA adapter on %s: State field not found." %(vios_sea, vios_name), lvl=0)
         return (1, "")
+
+    log("VIOS %s sea adapter %s is in %s state" %(vios_name, vios_sea, state))
+    remove(filename)
     return (0, state)
 
 
@@ -700,7 +694,6 @@ def get_vios_sea_state(vios_name, vios_sea):
 def curl_request(sess_key, url, filename):
     log("Curl request, file: %s, url: %s\n" %(filename, url))
     try:
-        log("writing file: %s\n" %(filename))
         f = open(filename, 'wb')
     except IOError, e:
         write("ERROR: Failed to create file %s: %s." %(e.filename, e.strerror), lvl=0)
@@ -808,17 +801,17 @@ Usage: vioshc -h
     """, lvl=0)
 
 
-# TBC - handle log name and location after discussion
 # Establish a log file
 today = datetime.now()
 log_dir = "%s/vios_maint" %(LOG_DIR)
 if not os.path.exists(log_dir):
     os.makedirs(log_dir)
 os.chdir(log_dir)
-log_path = "%s/vios_maint.log" %(log_dir)
-# log file format is vios_maint_YY_mm_dd_HH_MM_SS.log
-#log_path = "%s/vios_maint_%02d_%02d_%d_%02d_%02d_%02d.log" \
-#            %(log_dir, today.year, today.month, today.day, today.hour, today.minute, today.second)
+# Log file format is vios_maint_YYYY-mm-dd_HHMMSS.log
+# TBC - for debugging it could be easier to have a fixed file name
+#log_path = "%s/vios_maint.log" %(log_dir)
+log_path = "%s/vios_maint_%04d-%02d-%d_%02d%02d%02d.log" \
+            %(log_dir, today.year, today.month, today.day, today.hour, today.minute, today.second)
 try:
     log_file = open(log_path, 'a+', 1)
 except IOError, e:
@@ -873,6 +866,8 @@ for opt, arg in opts:
     elif opt in ('-v'):
         verbose += 1
         sys.stdout = sys.stderr
+        if verbose == 1:
+            print "Log file is: %s\n" %(log_path)   # no need to log in file here
     elif opt in ('-l'):
         action = "list"
         list_arg = arg
@@ -958,6 +953,7 @@ hmc_info['session_key'] = session_key
 if action == "list":
     log("\nListing UUIDs\n")
     rc = print_uuid(hmc_info, vios_info, list_arg, filename_systems)
+    remove(filename_session_key)
     sys.exit(rc)
 
 
@@ -1279,6 +1275,12 @@ if vios_num > 1:
     # Grab the backup device name
     backing_device_vscsi = grep_array(filename_vscsi_mapping2, 'BackingDeviceName')
     
+    log("Local  partition VSCSI: %s\n" %(local_partition_vscsi))
+    log("Remote partition VSCSI: %s\n" %(remote_partition_vscsi))
+    log("Local  slot VSCSI     : %s\n" %(local_slot_vscsi))
+    log("Remote slot VSCSI     : %s\n" %(remote_slot_vscsi))
+    log("Backing device VSCSI  : %s\n" %(backing_device_vscsi))
+
     # Parse for backup device info
     try:
         tree = ET.ElementTree(file=filename_vscsi_mapping2)
@@ -1494,6 +1496,7 @@ for id in active_client_id:
     fc_ids = grep_array(filename_npiv_mapping, 'LocalPartitionID')
     if len(fc_ids) == 0:
         write("No vFC client adapter ID for lpar: %s (%s)" %(lpar_info[id]['name'], lpar_info[id]['uuid']))
+        remove(filename_npiv_mapping)
         continue
     
     # Create a list of dynamic reconfiguration connectors
@@ -1556,6 +1559,7 @@ for id in active_client_id:
 
     remove(filename_adapter1)
     remove(filename_adapter2)
+    remove(filename_npiv_mapping)
 
 
 #######################################################
@@ -1774,6 +1778,7 @@ write("\n\n%d of %d Health Checks Passed" %(num_hc_pass, total_hc), lvl=0)
 write("%d of %d Health Checks Failed" %(num_hc_fail, total_hc), lvl=0)
 write("Pass rate of %d%%\n" %(pass_pct), lvl=0)
 
+remove(filename_session_key)
 log_file.close()
 
 # Should exit 0 if all health checks pass, exit 1 if any health check fails
