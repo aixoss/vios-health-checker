@@ -52,6 +52,8 @@ vios1_uuid = ""     # (user provided -U)
 vios2_uuid = ""     # (user provided -U)
 managed_system_uuid = ""    # (user provided -m)
 
+lpar_info = {}
+
 # Flags & Counters used by program
 rc = 0
 verbose = 0         # (user provided -v)
@@ -162,7 +164,7 @@ def exec_cmd(cmd):
         write('Command: {} failed: {}'.format(cmd, exc.args))
 
     # TBC - uncomment for debug
-    log('command {} returned [rc:{} output:{}]\n'.format(cmd, rc, output))
+    # log('command {} returned [rc:{} output:{}]\n'.format(cmd, rc, output))
 
     return (rc, output)
 
@@ -201,6 +203,8 @@ def get_nim_info(obj_name):
         if match:
             if match.group(1) not in info:
                 info[match.group(1)] = match.group(2)
+            elif type(info[match.group(1)]) is list:
+                info[match.group(1)].append(match.group(2))
             else:
                 info[match.group(1)] = [info[match.group(1)]]
                 info[match.group(1)].append(match.group(2))
@@ -282,28 +286,36 @@ def get_usr_passwd(decrypt_file):
 # retrieving Managed system and VIOS UUIDs and Machine SerialNumber
 # Input: XML file of managed systems, hmc hash
 # Output: dict of mapped managed systems to thier SerialNumbers and VIOS
-def managed_system_discovery(xml_file, hmc_info):
+# TBC: change the xml parsing?
+def build_managed_system(hmc_info, vios_info, managed_system, xml_file, arg):
     vios_arr = [] # list of all vios UUIDs
-    m = {} # managed system to vios mapping
-    managed_system = "" # string to hold current managed system being searched
+    curr_managed_sys = "" # string to hold current managed system being searched
+    vios_num = 0
 
-    tree = ET.ElementTree(file=xml_file)
+    log("Parse xml file: %s\n" %(xml_file))
+    try:
+        tree = ET.ElementTree(file=xml_file)
+    except:
+        write("ERROR: Failed to parse '%s' file." %(xml_file), lvl=0)
+        sys.exit(3)
 
-    # Map managed system UUIDs to serial numbers
+    log("Map managed system UUIDs to serial numbers\n")
     iter_ = tree.getiterator()
     for elem in iter_:
         # Retrieving the current Managed System
         if re.sub(r'{[^>]*}', "", elem.tag) == "entry":
             elem_child = elem.getchildren()
             for child in elem_child:
-                if re.sub(r'{[^>]*}', "", child.tag) == "id":
-                    if child.text in m:
-                        continue
-                    else:
-                        m[child.text] = []
-                        managed_system = child.text
+                if re.sub(r'{[^>]*}', "", child.tag) != "id":
+                    continue
+                if child.text in managed_system:
+                    continue
+                curr_managed_sys = child.text
+                log("Get managed system UUID: %s\n" %(curr_managed_sys))
+                managed_system[curr_managed_sys] = {}
+                managed_system[curr_managed_sys]['serial'] = "Not Found"
+                managed_system[curr_managed_sys]['vios'] = []
 
-        # Retrieving the current Managed System Serial
         if re.sub(r'{[^>]*}', "", elem.tag) == "MachineTypeModelAndSerialNumber":
             # string to append to the managed system dict
             serial_string = ""
@@ -316,61 +328,35 @@ def managed_system_discovery(xml_file, hmc_info):
                 if re.sub(r'{[^>]*}', "", serial_child.tag) == "SerialNumber":
                     serial_string += serial_child.text
             # Adding the serial to the current Managed System
-            m[managed_system].append([serial_string])
+            managed_system[curr_managed_sys]['serial'] = serial_string
 
-    # Retrieve the VIOS UUIDs
-    iter_ = tree.getiterator()
-    for elem in iter_:
-        if re.sub(r'{[^>]*}', "", elem.tag) == "AssociatedVirtualIOServers":
+        if re.sub(r'{[^>]*}', "", elem.tag) == "AssociatedVirtualIOServers" and arg == 'a':
+            write("Retrieving the VIOS UUIDs")
             elem_child = elem.getchildren()
+
+            # The VIOS UUIDs are in the "link" attribute
             for child in elem_child:
-                if re.sub(r'{[^>]*}', "", child.tag) == "link":
-                    # The VIOS UUIDs are in the "link" attribute
-                    link_str = str(child.attrib)
-                    vios_arr.append(link_str.strip().split("/"))
+                if re.sub(r'{[^>]*}', "", child.tag) != "link":
+                    continue
+                match = re.match('^.*VirtualIOServer\/(\S+)$', child.attrib['href'])
+                if match:
+                    uuid = match.group(1)
+                    vios_num += 1
 
-    # Get rid of excess info and place in dict
-    for line in vios_arr:
-        s = line[line.index("VirtualIOServer")+1]
-        s = re.sub(r'\'[^>]*}', "", s)
-        # Check if key already exists
-        if line[line.index("ManagedSystem")+1] in m:
-            m[line[line.index("ManagedSystem")+1]].append(s)
+                    write("Collect info on clients of VIOS%d: %s" %(vios_num, uuid))
+                    filename = "vios%s.xml" %(vios_num)
+                    rc = get_vios_info(hmc_info, uuid, filename)
+                    if rc != 0:
+                        write("ERROR: Failed to collect vios %s info: %s" %(uuid, rc[1]), lvl=0)
+                        continue
 
-    uuid_arr = []
-    for key, values in m.iteritems():
-        for uuid in values[1:]:
-            uuid_arr.append(uuid)
+                    vios_name = build_vios_info(vios_info, filename, uuid)
+                    log("vios: %s, %s\n" %(vios_name, str(vios_info[vios_name])))
 
-    # Get PartitionIDs
-    vios_part = {} 
-    i = 0
-    for uuid in uuid_arr:
-        filename = "vios%s.xml" %(i)
-        i += 1
-        touch(filename)
-        rc = get_vios_info(hmc_info, uuid, filename)
-        if rc != 0:
-            write("ERROR: Failed to get VIOS information %s: %s." %(filename, rc[1]), lvl=0)
-            sys.exit(3)
+                    managed_system[curr_managed_sys]['vios'].append(vios_name)
 
-        # Parse file for partition IDs
-        tree = ET.ElementTree(file=filename)
-        iter_ = tree.getiterator()
-        for elem in iter_:
-            vios_part[uuid] = "Not found"
-            if re.sub(r'{[^>]*}', "", elem.tag) == "PartitionID":
-                vios_part[uuid] = elem.text
-                break
-
-    # Clean up
-    i = 0
-    for uuid in uuid_arr:
-        filename = "vios%s.xml" %(i)
-        i += 1
-        remove(filename)
-
-    return m, vios_part
+                    remove(filename)
+    return 0
 
 # Inputs: HMC IP address, user ID, password
 # Output: session key
@@ -418,53 +404,41 @@ def get_session_key(hmc_info, filename):
 
     return s_key.strip()
 
-# Given a corresponding flag, it will print out managed system
-# and vios UUIDs
-# Input: HMC IP address, session key, argument flag
-# Output: None
-def print_uuid(hmc_info, arg, filename):
+# Print out managed system and vios UUIDs
+# Input: HMC info hash to get: IP address, session key
+#        argument flag can be 'm' or 'a'
+#        XML file name to use for Managed System info
+# Output: 0 for success, !0 otherwise
+def print_uuid(hmc_info, vios_info, arg, filename):
 
-    log("print_uuid: arg=%s\n" %(arg))
-    rc = 0
-
-    url = "https://%s:12443/rest/api/uom/ManagedSystem" %(hmc_info['hostname'])
-    rc = curl_request(hmc_info['session_key'], url, filename)
+    rc = get_managed_system(hmc_info, filename)
     if rc != 0:
-        write("ERROR: Cannot get session key for '%s': %s" %(hmc_info['hostname'], rc[1]), lvl=0)
-        remove(filename)
-        return rc[0]
-
+        write("ERROR: Failed to collect managed system info: %s" %(rc[1]), lvl=0)
+        sys.exit(2)
 
     # Mapped managed systems
-    m, vios_part = managed_system_discovery(filename, sess_key, hmc_info)
+    managed_system = {}
+    build_managed_system(hmc_info, vios_info, managed_system, filename, arg)
 
-    if arg == 'm':
-        # Print only managed systems
-        write("\nManaged Systems UUIDs                   Serial", lvl=0)
-        write("-" * 37 + "\t" + "-"*22, lvl=0)
-        for key, values in m.iteritems():
-            write(key + "\t" + ''.join(values[0]) + "\n", lvl=0)
+    #if arg == 'm':
+    log("Print only managed systems\n")
+    write("\n%-37s    %-22s" %("Managed Systems UUIDs", "Serial"), lvl=0)
+    write("-" * 37 + "    " + "-"*22, lvl=0)
+    for key in managed_system.keys():
+        write("%-37s    %-22s" %(key, managed_system[key]['serial']), lvl=0)
 
-    elif arg == 'a':
-        write("\nManaged Systems UUIDs                   Serial", lvl=0)
-        write("-" * 37 + "\t" + "-"*22, lvl=0)
-        for key, values in m.iteritems():
-            write(key + "\t" + ''.join(values[0]) + "\n", lvl=0)
-            write("\tVIOS                                    Partition ID", lvl=0)
-            write("\t" + "-" * 37 + "\t" + "-" * 14, lvl=0)
-            for v in values[1:]:
-                write("\t" + v + "\t" + vios_part[v], lvl=0)
-            write("\n", lvl=0)
-
-    else:
-        # should never happen as checked in main
-        write("ERROR: Invalid argument '%s' for print_uuid." %(arg), lvl=0)
-        rc = 2
+        if arg == 'a':
+            write("\n\t%-37s    %-14s" %("VIOS", "Partition ID"), lvl=0)
+            write("\t" + "-" * 37 + "    " + "-" * 14, lvl=0)
+            for vios in managed_system[key]['vios']:
+                write("\t%-37s    %-14s" %(vios_info[vios]['uuid'], vios_info[vios]['id']), lvl=0)
+            write("", lvl=0)
+    write("", lvl=0)
 
     # Clean up
     remove(filename)
 
-    return rc
+    return 0
 
 
 ### Parsing functions ###
@@ -474,7 +448,11 @@ def print_uuid(hmc_info, arg, filename):
 # Output: value
 def grep(filename, tag):
     format_xml_file(filename)
-    tree = ET.ElementTree(file=filename)
+    try:
+        tree = ET.ElementTree(file=filename)
+    except:
+        log("WARNING: Failed to parse '%s' to find '%s' tag.\n" %(filename, tag))
+        return ""
     iter_ = tree.getiterator()
     for elem in iter_:
         if re.sub(r'{[^>]*}', "", elem.tag) == tag:
@@ -490,6 +468,7 @@ def grep_array(filename, tag):
     try:
         tree = ET.ElementTree(file=filename)
     except:
+        log("WARNING: Failed to parse '%s' to find '%s' tag.\n" %(filename, tag))
         return arr
     iter_ = tree.getiterator()
     for elem in iter_:
@@ -506,6 +485,7 @@ def grep_check(filename, tag):
     try:
         tree = ET.ElementTree(file=filename)
     except:
+        log("WARNING: Failed to parse '%s' to find '%s' tag.\n" %(filename, tag))
         return found
     iter_ = tree.getiterator()
     for elem in iter_:
@@ -521,7 +501,7 @@ def awk(filename, tag1, tag2):
     try:
         tree = ET.ElementTree(file=filename)
     except:
-        write("Cannot read file %s" %(filename), lvl=0)
+        log("WARNING: Failed to parse '%s' to find '%s' and '%s' tags.\n" %(filename, tag1, tag2))
         return arr
     iter_ = tree.getiterator()
     for elem in iter_:
@@ -573,32 +553,86 @@ def build_vios_info(vios_info, filename, vios_uuid):
     # Get element: PartitionName
     e_PartionName = e_root.find("Atom:content/vios:VirtualIOServer/vios:PartitionName", ns)
     if e_PartionName is None:
-        write("ERROR: PartitionName element not found in file %s" %(filename, vios_uuid), lvl=0)
+        write("ERROR: PartitionName element not found in file %s" %(filename), lvl=0)
         sys.exit(3)
     vios_info[vios_name]['partition_name'] = e_PartionName.text
 
     # Get element: PartitionID
     e_PartionID = e_root.find("Atom:content/vios:VirtualIOServer/vios:PartitionID", ns)
     if e_PartionID is None:
-        write("ERROR: PartitionID element not found in file %s" %(filename, vios_uuid), lvl=0)
+        write("ERROR: PartitionID element not found in file %s" %(filename), lvl=0)
         sys.exit(3)
     vios_info[vios_name]['id'] = e_PartionID.text
 
     # Get element: PartitionState
     e_PartitionState = e_root.find("Atom:content/vios:VirtualIOServer/vios:PartitionState", ns)
     if e_PartitionState is None:
-        write("ERROR: PartitionState element not found in file %s" %(filename, vios_uuid), lvl=0)
+        write("ERROR: PartitionState element not found in file %s" %(filename), lvl=0)
         sys.exit(3)
     vios_info[vios_name]['partition_state'] = e_PartitionState.text
 
     # Get element: ResourceMonitoringControlState
     e_RMCState = e_root.find("Atom:content/vios:VirtualIOServer/vios:ResourceMonitoringControlState", ns)
     if e_RMCState is None:
-        write("ERROR: ResourceMonitoringControlState element not found in file %s" %(filename, vios_uuid), lvl=0)
+        write("ERROR: ResourceMonitoringControlState element not found in file %s" %(filename), lvl=0)
         sys.exit(3)
     vios_info[vios_name]['control_state'] = e_RMCState.text
 
     return vios_name
+
+# Parse XML file to build the lpar_info hash
+# Retrieve partition ID, Name and UUID
+# Inputs: lpar hash, file name
+# Output: 0 if success,
+#         prints error message and exit upon error
+def build_lpar_info(lpar_info, filename):
+    ns = { 'Atom': 'http://www.w3.org/2005/Atom', \
+           'lpar': 'http://www.ibm.com/xmlns/systems/power/firmware/uom/mc/2012_10/' }
+    try:
+        e_tree = ET.parse(filename)
+    except IOError, e:
+        write("ERROR: Failed to parse %s: %s." %(e.filename, e.strerror), lvl=0)
+        remove(filename)
+        sys.exit(3)
+    except ElementTree.ParseError, e:
+        write("ERROR: Failed to parse %s: %s" %(filename, e), lvl=0)
+        remove(filename)
+        sys.exit(3)
+    e_root = e_tree.getroot()
+
+    # Get partitions UUID: element: id
+    e_Partitions = e_root.findall("Atom:entry", ns)
+    if e_Partitions is None:
+        write("ERROR: Cannot get entry element in file %s" %(filename), lvl=0)
+        sys.exit(3)
+    elif len(e_Partitions) == 0:
+        write("No partion found in file %s" %(filename))
+        return 0
+
+    for e_Partition in e_Partitions:
+        # Get element: PartitionID
+        e_PartitionID = e_Partition.find("Atom:content/lpar:LogicalPartition/lpar:PartitionID", ns)
+        if e_PartitionID is None:
+            write("ERROR: PartitionID element not found in file %s" %(filename), lvl=0)
+            sys.exit(3)
+        lpar_info[e_PartitionID.text] = {}
+
+        e_PartitionUUID = e_Partition.find("Atom:id", ns)
+        if e_PartitionUUID is None:
+            write("ERROR: id element of PartitionID:%s entry not found in file %s" \
+                    %(e_PartitionID.text, filename), lvl=0)
+            sys.exit(3)
+        lpar_info[e_PartitionID.text]['uuid'] = e_PartitionUUID.text
+
+        # Get element: PartitionName
+        e_PartionName = e_Partition.find("Atom:content/lpar:LogicalPartition/lpar:PartitionName", ns)
+        if e_PartionName is None:
+            write("ERROR: PartitionName element of PartitionID=%s not found in file %s" \
+                    %(e_PartitionID.text, filename), lvl=0)
+            sys.exit(3)
+        lpar_info[e_PartitionID.text]['name'] = e_PartionName.text
+
+    return 0
 
 
 ### c_rsh functions ###
@@ -713,6 +747,11 @@ def curl_request(sess_key, url, filename):
 # No output, writes data to file
 def get_vios_info(hmc_info, vios_uuid, filename):
     url = "https://%s:12443/rest/api/uom/VirtualIOServer/%s" %(hmc_info['hostname'], vios_uuid)
+    return curl_request(hmc_info['session_key'], url, filename)
+
+# Get Managed Systems
+def get_managed_system(hmc_info, filename):
+    url = "https://%s:12443/rest/api/uom/ManagedSystem" %(hmc_info['hostname'])
     return curl_request(hmc_info['session_key'], url, filename)
 
 # Find LPARs of a managed system
@@ -893,7 +932,7 @@ hmc_info['hostname'] = hostname
 hmc_info['ip'] = ip_list[0]
 
 for key in hmc_info.keys():
-    log("hmc_info: %s, %-13s = %s\n" %(nim_name, key, hmc_info[key]))
+    log("hmc_info[%-13s] = %s\n" %(key, hmc_info[key]))
 
 write("Getting HMC credentials")
 # If either username or password are empty, try to retrieve them
@@ -918,7 +957,7 @@ hmc_info['session_key'] = session_key
 #######################################################
 if action == "list":
     log("\nListing UUIDs\n")
-    rc = print_uuid(hmc_info, list_arg, filename_systems)
+    rc = print_uuid(hmc_info, vios_info, list_arg, filename_systems)
     sys.exit(rc)
 
 
@@ -988,36 +1027,23 @@ for vios in vios_info.keys():
 # system that we are interested in
 #######################################################
 # Get managed system LPAR info, write data to file
-write("Getting managed system LPAR info")
-get_managed_system_lpar(hmc_info, managed_system_uuid, filename_lpar_info)
+write("Collect LPAR info for managed system: %s" %(managed_system_uuid))
+rc1 = get_managed_system_lpar(hmc_info, managed_system_uuid, filename_lpar_info)
+if rc1 != 0:
+    write("ERROR: Failed to collect managed system %s info: %s" %(managed_system_uuid, rc1[1]), lvl=0)
+    sys.exit(2)
 
 # Check for error response in file
 if grep_check(filename_lpar_info, 'HttpErrorResponse'):
     write("ERROR: Request to https://%s:12443/rest/api/uom/ManagedSystem/%s/LogicalPartition returned Error Response." %(hmc_ip, managed_system_uuid), lvl=0)
     write("Unable to detect LPAR information.", lvl=0)
 
-# Create list of LPAR partition IDs
-lpar_id = grep_array(filename_lpar_info, 'PartitionID')
-# Create list of LPAR partition names
-lpar_name = grep_array(filename_lpar_info, 'PartitionName')
-# Create list of LPAR UUIDs
-# skip first element because first <id> tag not relevant
-lpar_uuid = grep_array(filename_lpar_info, 'id')
-lpar_uuid.pop(0)
+build_lpar_info(lpar_info, filename_lpar_info)
 
-# Associative array to map LPAR ID to its partition name & UUID
-lpar_info = {}
+# Log VIOS information
+for id in lpar_info.keys():
+    log("lpar[%s]: %s\n" %(id, str(lpar_info[id])))
 
-write("LPAR information belonging to managed system with UUID %s:" %(managed_system_uuid))
-
-# Build lpar_info
-log("lpar_id: %s\nlpar_name: %s\nlpar_uuid: %s\n" %(lpar_id, lpar_name, lpar_uuid))
-i = 0
-for id in lpar_id:
-    lpar_info[id] = {}
-    lpar_info[id]['name'] = lpar_name[i]
-    lpar_info[id]['uuid'] = lpar_uuid[i]
-    i += 1
 
 #######################################################
 # Check active client are the same for VIOS1 and VIOS2
