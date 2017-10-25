@@ -43,6 +43,8 @@ hmc_user_id = ""    # (user provided -u or retrieved)
 hmc_password = ""   # (user provided -p or retrieved)
 hmc_info = {}
 
+managed_system_info = {}
+
 # Dual VIOS pair
 vios_info = {}
 vios1_name = ""
@@ -64,8 +66,6 @@ total_hc = 0
 # File name
 filename_session_key = 'sessionkey.xml'
 filename_systems = 'systems.xml'
-filename_vios1 = 'vios1_only.xml'   # check managed_system_discovery() if you change this
-filename_vios2 = 'vios2_only.xml'   # check managed_system_discovery() if you change this
 filename_lpar_info = 'lpar_info.xml'
 filename_vscsi_mapping1 = 'vios1_vscsi_mapping.xml'
 filename_vscsi_mapping2 = 'vios2_vscsi_mapping.xml'
@@ -278,9 +278,10 @@ def get_usr_passwd(decrypt_file):
 # Takes in XML file of managed systems, parsing it and
 # retrieving Managed system and VIOS UUIDs and Machine SerialNumber
 # Input: XML file of managed systems, hmc hash
-# Output: dict of mapped managed systems to thier SerialNumbers and VIOS
+# Output: dict of vioses
+# Output: dict of mapped managed systems to their SerialNumbers and VIOS
 # TBC: change the xml parsing?
-def build_managed_system(hmc_info, vios_info, managed_system, xml_file, arg):
+def build_managed_system(hmc_info, vios_info, managed_system_info, xml_file):
     vios_arr = [] # list of all vios UUIDs
     curr_managed_sys = "" # string to hold current managed system being searched
     vios_num = 0
@@ -292,7 +293,7 @@ def build_managed_system(hmc_info, vios_info, managed_system, xml_file, arg):
         write("ERROR: Failed to parse '%s' file." %(xml_file), lvl=0)
         sys.exit(3)
 
-    log("Map managed system UUIDs to serial numbers\n")
+    log("Get managed system serial numbers\n")
     iter_ = tree.getiterator()
     for elem in iter_:
         # Retrieving the current Managed System
@@ -301,13 +302,13 @@ def build_managed_system(hmc_info, vios_info, managed_system, xml_file, arg):
             for child in elem_child:
                 if re.sub(r'{[^>]*}', "", child.tag) != "id":
                     continue
-                if child.text in managed_system:
+                if child.text in managed_system_info:
                     continue
                 curr_managed_sys = child.text
                 log("get managed system UUID: %s\n" %(curr_managed_sys))
-                managed_system[curr_managed_sys] = {}
-                managed_system[curr_managed_sys]['serial'] = "Not Found"
-                managed_system[curr_managed_sys]['vios'] = []
+                managed_system_info[curr_managed_sys] = {}
+                managed_system_info[curr_managed_sys]['serial'] = "Not Found"
+                managed_system_info[curr_managed_sys]['vios'] = []
 
         if re.sub(r'{[^>]*}', "", elem.tag) == "MachineTypeModelAndSerialNumber":
             # string to append to the managed system dict
@@ -321,10 +322,9 @@ def build_managed_system(hmc_info, vios_info, managed_system, xml_file, arg):
                 if re.sub(r'{[^>]*}', "", serial_child.tag) == "SerialNumber":
                     serial_string += serial_child.text
             # Adding the serial to the current Managed System
-            managed_system[curr_managed_sys]['serial'] = serial_string
-            log("managed system %s has serial: %s\n" %(curr_managed_sys, serial_string))
+            managed_system_info[curr_managed_sys]['serial'] = serial_string
 
-        if re.sub(r'{[^>]*}', "", elem.tag) == "AssociatedVirtualIOServers" and arg == 'a':
+        if re.sub(r'{[^>]*}', "", elem.tag) == "AssociatedVirtualIOServers":
             write("Retrieving the VIOS UUIDs")
             elem_child = elem.getchildren()
 
@@ -345,15 +345,17 @@ def build_managed_system(hmc_info, vios_info, managed_system, xml_file, arg):
                         continue
 
                     vios_name = build_vios_info(vios_info, filename, uuid)
-                    log("vios: %s, %s\n" %(vios_name, str(vios_info[vios_name])))
+                    vios_info[vios_name]['managed_system'] = curr_managed_sys
+                    vios_info[vios_name]['filename'] = filename
+                    for key in vios_info[vios_name].keys():
+                        log("vios_info[%s][%s] = %s\n" %(vios_name, key, vios_info[vios_name][key]))
 
-                    managed_system[curr_managed_sys]['vios'].append(vios_name)
+                    managed_system_info[curr_managed_sys]['vios'].append(vios_name)
 
-                    remove(filename)
-            log("managed system %s has %d VIOS: %s\n" \
-                %(curr_managed_sys, \
-                len(managed_system[curr_managed_sys]['vios']), \
-                ','.join(managed_system[curr_managed_sys]['vios'])))
+    for ms in managed_system_info.keys():
+        for key in managed_system_info[ms].keys():
+            log("managed_system_info[%s][%s]: %s\n" %(ms, key, managed_system_info[ms][key]))
+
     return 0
 
 # Inputs: HMC IP address, user ID, password
@@ -403,34 +405,20 @@ def get_session_key(hmc_info, filename):
 # Print out managed system and vios UUIDs
 # Input: HMC info hash to get: IP address, session key
 #        argument flag can be 'm' or 'a'
-#        XML file name to use for Managed System info
 # Output: 0 for success, !0 otherwise
-def print_uuid(hmc_info, vios_info, arg, filename):
-
-    rc = get_managed_system(hmc_info, filename)
-    if rc != 0:
-        write("ERROR: Failed to collect managed system info: %s" %(rc[1]), lvl=0)
-        sys.exit(2)
-
-    # Mapped managed systems
-    managed_system = {}
-    build_managed_system(hmc_info, vios_info, managed_system, filename, arg)
-
+def print_uuid(managed_system_info, vios_info, arg):
     write("\n%-37s    %-22s" %("Managed Systems UUIDs", "Serial"), lvl=0)
     write("-" * 37 + "    " + "-"*22, lvl=0)
-    for key in managed_system.keys():
-        write("%-37s    %-22s" %(key, managed_system[key]['serial']), lvl=0)
+    for key in managed_system_info.keys():
+        write("%-37s    %-22s" %(key, managed_system_info[key]['serial']), lvl=0)
 
         if arg == 'a':
             write("\n\t%-37s    %-14s" %("VIOS", "Partition ID"), lvl=0)
             write("\t" + "-" * 37 + "    " + "-" * 14, lvl=0)
-            for vios in managed_system[key]['vios']:
+            for vios in managed_system_info[key]['vios']:
                 write("\t%-37s    %-14s" %(vios_info[vios]['uuid'], vios_info[vios]['id']), lvl=0)
             write("", lvl=0)
     write("", lvl=0)
-
-    # Clean up
-    remove(filename)
 
     return 0
 
@@ -648,7 +636,7 @@ def get_vios_sea_state(vios_name, vios_sea):
             "LANG=C /bin/entstat -d %s" %(vios_sea)]
     (rc, output) = exec_cmd(cmd)
     if rc != 0:
-        write("ERROR: Failed to get the state of the %s SEA adapter on %s: %s" %(vios_SEA, vios_name, output), lvl=0)
+        write("ERROR: Failed to get the state of the %s SEA adapter on %s: %s" %(vios_sea, vios_name, output), lvl=0)
         return (1, "")
 
     found_stat = False
@@ -939,7 +927,7 @@ if (hmc_user_id != ""):
 if (hmc_password != ""):
     hmc_info['user_password'] = hmc_password
 
-write("Getting HMC seesion key")
+write("Getting HMC session key")
 session_key = get_session_key(hmc_info, filename_session_key)
 if session_key == "":
     write("ERROR: Failed to get %s session key." %(hmc_ip), lvl=0)
@@ -948,12 +936,27 @@ hmc_info['session_key'] = session_key
 
 
 #######################################################
+# Get Managed System info
+#######################################################
+log("\nGet Managed System info\n")
+rc = get_managed_system(hmc_info, filename_systems)
+if rc != 0:
+    write("ERROR: Failed to collect managed system info: %s" %(rc[1]), lvl=0)
+    sys.exit(2)
+build_managed_system(hmc_info, vios_info, managed_system_info, filename_systems)
+
+
+#######################################################
 # List UUIDs
 #######################################################
 if action == "list":
     log("\nListing UUIDs\n")
-    rc = print_uuid(hmc_info, vios_info, list_arg, filename_systems)
+    rc = print_uuid(managed_system_info, vios_info, list_arg)
+    # Clean up
+    remove(filename_systems)
     remove(filename_session_key)
+    for name in vios_info.keys():
+        remove(vios_info[name]['filename'])
     sys.exit(rc)
 
 
@@ -962,34 +965,29 @@ if action == "list":
 # Get name and partition ID of each VIOS then filter
 # the ones of interest
 #######################################################
-write("Find VIOS(es) Name, IP Address, ID, UUID")
-
-# Find clients of VIOS1, write data to file
-write("Collect info on clients of VIOS1: %s" %(vios1_uuid))
-rc1 = get_vios_info(hmc_info, vios1_uuid, filename_vios1)
-if rc1 != 0:
-    write("ERROR: Failed to collect vios %s info: %s" %(vios1_uuid, rc1[1]), lvl=0)
-    rc = rc1[0]
-
-if vios_num > 1:
-    # Find clients of VIOS2, write data to file
-    write("Collect info on clients of VIOS2: %s" %(vios2_uuid))
-    rc1 = get_vios_info(hmc_info, vios2_uuid, filename_vios2)
-    if rc1 != 0:
-        write("ERROR: Failed to collect vios %s info: %s" %(vios1_uuid, rc1[1]), lvl=0)
-        rc = rc1[0]
+write("Find VIOS(es) Name from specified UUID(s)")
+for name in vios_info.keys():
+    if vios_info[name]['uuid'] == vios1_uuid:
+        vios1_name = name
+        vios_info[name]['role'] = 'primary'
+    elif vios_num > 1 and vios_info[name]['uuid'] == vios2_uuid:
+        vios2_name = name
+        vios_info[name]['role'] = 'secondary'
+    else:
+        remove(vios_info[name]['filename'])
+        del vios_info[name]
+for name in vios_info.keys():
+    for key in vios_info[name].keys():
+        log("vios_info[%s][%s] = %s\n" %(name, key, vios_info[name][key]))
+rc = 0
+if vios1_name == "":
+    write("ERROR: Failed to find VIOS1 %s info." %(vios1_uuid), lvl=0)
+    rc = 1
+if vios_num > 1 and vios2_name == "":
+    write("ERROR: Failed to find VIOS2 %s info." %(vios2_uuid), lvl=0)
+    rc = 1
 if rc != 0:
     sys.exit(2)
-
-# Parse vios xml file and build the hash, exit upon error
-vios1_name = build_vios_info(vios_info, filename_vios1, vios1_uuid)
-vios_info[vios1_name]['role'] = 'primary'
-vios2_name = build_vios_info(vios_info, filename_vios2, vios2_uuid)
-vios_info[vios2_name]['role'] = 'secondary'
-
-# Log VIOS information
-for vios in vios_info.keys():
-    log("vios: %s, %s\n" %(vios, str(vios_info[vios])))
 
 primary_header = "\nPrimary VIOS Name         IP Address      ID         UUID                "
 backup_header = "\nBackup VIOS Name          IP Address      ID         UUID                "
@@ -1016,6 +1014,16 @@ for vios in vios_info.keys():
                    vios_info[vios]['ip'], \
                    vios_info[vios]['id'], \
                    vios_info[vios]['uuid']), lvl=0)
+
+# Check both vios are in the same CEC
+if vios_info[vios1_name]['managed_system'] != managed_system_uuid:
+    write("ERROR: VIOS1 %s (UUID: %s) is on Managed System %s, not %s\n" \
+            %(vios1_name, vios_info[vios1_name]['uuid'], vios_info[vios1_name]['managed_system'], managed_system_uuid), lvl=0)
+    sys.exit(2)
+if vios_num > 1 and vios_info[vios2_name]['managed_system'] != managed_system_uuid:
+    write("ERROR: VIOS2 %s (UUID: %s) is on Managed System %s, not %s\n" \
+            %(vios2_name, vios_info[vios2_name]['uuid'], vios_info[vios2_name]['managed_system'], managed_system_uuid), lvl=0)
+    sys.exit(2)
 
 
 #######################################################
@@ -1051,12 +1059,12 @@ diff_clients = []
 
 # Find configured clients of VIOS1
 # TBC - ConnectingPartitionID is present in VirtualFibreChannelMapping elem
-active_client['vios1'] = awk(filename_vios1, 'ServerAdapter', 'ConnectingPartitionID')
+active_client['vios1'] = awk(vios_info[vios1_name]['filename'], 'ServerAdapter', 'ConnectingPartitionID')
 log("active_client['vios1']: " + str(active_client['vios1']) + "\n")
 
 if vios_num > 1:
     # Find configured clients of VIOS2
-    active_client['vios2'] = awk(filename_vios2, 'ServerAdapter', 'ConnectingPartitionID')
+    active_client['vios2'] = awk(vios_info[vios2_name]['filename'], 'ServerAdapter', 'ConnectingPartitionID')
     log("active_client['vios2']: " + str(active_client['vios2']) + "\n")
 
     # Check that both VIOSes have the same clients
@@ -1078,7 +1086,7 @@ elif len(diff_clients) == 0:
     num_hc_pass += 1
 else:
     write("FAIL: Active client lists are not the same for VIOS1 and VIOS2, check these clients:", lvl=0)
-    write(diff_clients, lvl=0)
+    write(str(diff_clients), lvl=0)
     num_hc_fail += 1
 
 write("\nActive Client Information:")
@@ -1093,9 +1101,6 @@ write(divider)
 for id in active_client_id:
     write(format %(lpar_info[id]['name'], id, lpar_info[id]['uuid']))
 
-remove(filename_vios1)
-if vios_num > 1:
-    remove(filename_vios2)
 remove(filename_lpar_info)
 
 
@@ -1530,7 +1535,7 @@ for id in active_client_id:
                 notzoned_value = grep(filename_adapter1, 'notZoned')
                 notzoned = re.match('.*false.*', notzoned_value)
 
-        if vios_info[vios2_name]['id'] == partition_id:
+        if vios_num > 1 and vios_info[vios2_name]['id'] == partition_id:
             lower_WWPN = WWPN_list[j]
             j += 1 # get the higher WWPN
             higher_WWPN = WWPN_list[j]
@@ -1551,10 +1556,16 @@ for id in active_client_id:
                 notzoned = notzoned and re.match('.*false.*', notzoned_value)
 
         if notzoned:
-            write("PASS: %s has a path through both VIOSes." %(lpar_info[id]['name']))
+            if vios_num > 1:
+                write("PASS: %s has a NPIV path through both VIOSes." %(lpar_info[id]['name']))
+            else:
+                write("PASS: %s has a NPIV path through the VIOS." %(lpar_info[id]['name']))
             num_hc_pass += 1
         else:
-            write("FAIL: %s doesn't have a path through both VIOSes." %(lpar_info[id]['name']), lvl=0)
+            if vios_num > 1:
+                write("FAIL: %s doesn't have a NPIV path through both VIOSes." %(lpar_info[id]['name']), lvl=0)
+            else:
+                write("FAIL: %s doesn't have a NPIV path through the VIOS." %(lpar_info[id]['name']))
             num_hc_fail += 1
 
     remove(filename_adapter1)
@@ -1665,7 +1676,6 @@ if vios_num > 1:
         write("WARNING: VIOS2 %s State should be BACKUP instead of STANDBY." %(vios2_name), lvl=0)
 
 # Pass conditions
-# TBC - how to handle this for only one VIOS?
 if (vios1_state == "PRIMARY") and (vios2_state == "BACKUP"):
     write("PASS: SEA is configured for failover.")
     num_hc_pass += 1
@@ -1704,7 +1714,6 @@ if vios_num > 1:
 #######################################################
 # VNIC Validation with REST API
 #######################################################
-
 vnic_fail_flag = 0
 vnic_configured = 0
 
@@ -1732,7 +1741,10 @@ else:
     i = 0
     for id in active_client_id:
         vios1_associated = "DISCONNECTED"
-        vios2_associated = "DISCONNECTED"
+        if vios_num > 1:
+            vios2_associated = "DISCONNECTED"
+        else:
+            vios2_associated = "n/a"
 
         # Get VNIC info, write data to vnic_info.xml
         get_vnic_info(hmc_info, lpar_info[id]['uuid'], filename_vnic_info)
@@ -1779,6 +1791,10 @@ write("%d of %d Health Checks Failed" %(num_hc_fail, total_hc), lvl=0)
 write("Pass rate of %d%%\n" %(pass_pct), lvl=0)
 
 remove(filename_session_key)
+remove(filename_systems)
+for name in vios_info.keys():
+    remove(vios_info[name]['filename'])
+
 log_file.close()
 
 # Should exit 0 if all health checks pass, exit 1 if any health check fails
