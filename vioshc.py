@@ -24,6 +24,7 @@ import re
 import pycurl
 import xml.etree.cElementTree as ET
 import socket
+import cStringIO
 
 
 #######################################################
@@ -42,6 +43,8 @@ hmc_user_id = ""    # (user provided -u or retrieved)
 hmc_password = ""   # (user provided -p or retrieved)
 hmc_info = {}
 
+managed_system_info = {}
+
 # Dual VIOS pair
 vios_info = {}
 vios1_name = ""
@@ -51,6 +54,8 @@ vios1_uuid = ""     # (user provided -U)
 vios2_uuid = ""     # (user provided -U)
 managed_system_uuid = ""    # (user provided -m)
 
+lpar_info = {}
+
 # Flags & Counters used by program
 rc = 0
 verbose = 0         # (user provided -v)
@@ -59,11 +64,8 @@ num_hc_pass = 0
 total_hc = 0
 
 # File name
-filename_vios_info = 'vios_info.xml'
 filename_session_key = 'sessionkey.xml'
 filename_systems = 'systems.xml'
-filename_vios1 = 'vios1_only.xml'   # check managed_system_discovery() if you change this
-filename_vios2 = 'vios2_only.xml'   # check managed_system_discovery() if you change this
 filename_lpar_info = 'lpar_info.xml'
 filename_vscsi_mapping1 = 'vios1_vscsi_mapping.xml'
 filename_vscsi_mapping2 = 'vios2_vscsi_mapping.xml'
@@ -74,8 +76,6 @@ filename_adapter1 = 'adapter1_info.xml'
 filename_adapter2 = 'adapter2_info.xml'
 filename_network1 = 'network1.xml'
 filename_network2 = 'network2.xml'
-filename_sea1 = 'sea1.xml'
-filename_sea2 = 'sea2.xml'
 filename_vnic_info = 'vnic_info.xml'
 filename_msg = 'msg.txt'
 
@@ -110,10 +110,8 @@ def write(txt, lvl=1):
 # Remove file under tmp directory
 def remove(path):
     try:
-        log("removing file: %s\n" %(path))
         if os.path.exists(path):
-            log("")
-            #os.remove(path)
+            os.remove(path)
         else:
             log("file %s does not exists.\n" %(path))
     except OSError, e:
@@ -122,7 +120,6 @@ def remove(path):
 # Remove extra headers from top of XML file
 def format_xml_file(filename):
     try:
-        log("reading file: %s\n" %(filename))
         f = open(filename, 'r+')
     except IOError, e:
         write("ERROR: Failed to create file %s: %s." %(e.filename, e.strerror), lvl=0)
@@ -162,7 +159,7 @@ def exec_cmd(cmd):
         write('Command: {} failed: {}'.format(cmd, exc.args))
 
     # TBC - uncomment for debug
-    log('command {} returned [rc:{} output:{}]\n'.format(cmd, rc, output))
+    # log('command {} returned [rc:{} output:{}]\n'.format(cmd, rc, output))
 
     return (rc, output)
 
@@ -201,6 +198,8 @@ def get_nim_info(obj_name):
         if match:
             if match.group(1) not in info:
                 info[match.group(1)] = match.group(2)
+            elif type(info[match.group(1)]) is list:
+                info[match.group(1)].append(match.group(2))
             else:
                 info[match.group(1)] = [info[match.group(1)]]
                 info[match.group(1)].append(match.group(2))
@@ -250,8 +249,7 @@ def get_hostname(host):
 # Input: (str) password file, mananged type, managed hostname
 # Output: (str) decrypted file
 def get_decrypt_file(passwd_file, type, hostname):
-    log("getting %s file for %s %s\n" %(passwd_file, type, hostname))
-    path = ""
+    log("getting decrypt file: %s for %s %s\n" %(passwd_file, type, hostname))
 
     cmd =["/usr/bin/dkeyexch", "-f", passwd_file, "-I", type, "-H", hostname, "-S"]
     (rc, output) = exec_cmd(cmd)
@@ -269,7 +267,6 @@ def get_decrypt_file(passwd_file, type, hostname):
 # Output: (str) username and password
 def get_usr_passwd(decrypt_file):
     try:
-        log("reading file: %s\n" %(decrypt_file))
         f = open(decrypt_file, 'r')
     except IOError, e:
         write("ERROR: Failed to open file %s: %s." %(e.filename, e.strerror), lvl=0)
@@ -281,27 +278,38 @@ def get_usr_passwd(decrypt_file):
 # Takes in XML file of managed systems, parsing it and
 # retrieving Managed system and VIOS UUIDs and Machine SerialNumber
 # Input: XML file of managed systems, hmc hash
-# Output: dict of mapped managed systems to thier SerialNumbers and VIOS
-def managed_system_discovery(xml_file, hmc_info):
+# Output: dict of vioses
+# Output: dict of mapped managed systems to their SerialNumbers and VIOS
+# TBC: change the xml parsing?
+def build_managed_system(hmc_info, vios_info, managed_system_info, xml_file):
     vios_arr = [] # list of all vios UUIDs
-    m = {} # managed system to vios mapping
-    managed_system = "" # string to hold current managed system being searched
+    curr_managed_sys = "" # string to hold current managed system being searched
+    vios_num = 0
 
-    tree = ET.ElementTree(file=xml_file)
+    log("Parse xml file: %s\n" %(xml_file))
+    try:
+        tree = ET.ElementTree(file=xml_file)
+    except:
+        write("ERROR: Failed to parse '%s' file." %(xml_file), lvl=0)
+        sys.exit(3)
 
-    # Map managed system UUIDs to serial numbers
+    log("Get managed system serial numbers\n")
     iter_ = tree.getiterator()
     for elem in iter_:
+        # Retrieving the current Managed System
         if re.sub(r'{[^>]*}', "", elem.tag) == "entry":
             elem_child = elem.getchildren()
             for child in elem_child:
-                if re.sub(r'{[^>]*}', "", child.tag) == "id":
-                    if child.text in m:
-                        continue
-                    else:
-                        m[child.text] = []
-                        managed_system = child.text
-        # Retreiving the current Managed System Serial
+                if re.sub(r'{[^>]*}', "", child.tag) != "id":
+                    continue
+                if child.text in managed_system_info:
+                    continue
+                curr_managed_sys = child.text
+                log("get managed system UUID: %s\n" %(curr_managed_sys))
+                managed_system_info[curr_managed_sys] = {}
+                managed_system_info[curr_managed_sys]['serial'] = "Not Found"
+                managed_system_info[curr_managed_sys]['vios'] = []
+
         if re.sub(r'{[^>]*}', "", elem.tag) == "MachineTypeModelAndSerialNumber":
             # string to append to the managed system dict
             serial_string = ""
@@ -314,64 +322,47 @@ def managed_system_discovery(xml_file, hmc_info):
                 if re.sub(r'{[^>]*}', "", serial_child.tag) == "SerialNumber":
                     serial_string += serial_child.text
             # Adding the serial to the current Managed System
-            m[managed_system].append([serial_string])
-    # Retrieve the VIOS UUIDs
-    iter_ = tree.getiterator()
-    for elem in iter_:
+            managed_system_info[curr_managed_sys]['serial'] = serial_string
+
         if re.sub(r'{[^>]*}', "", elem.tag) == "AssociatedVirtualIOServers":
+            write("Retrieving the VIOS UUIDs")
             elem_child = elem.getchildren()
+
+            # The VIOS UUIDs are in the "link" attribute
             for child in elem_child:
-                if re.sub(r'{[^>]*}', "", child.tag) == "link":
-                    # The VIOS UUIDs are in the "link" attribute
-                    link_str = str(child.attrib)
-                    vios_arr.append(link_str.strip().split("/"))
-    # Get rid of excess info and place in dict
-    for line in vios_arr:
-        s = line[line.index("VirtualIOServer")+1]
-        s = re.sub(r'\'[^>]*}', "", s)
-        # Check if key already exists
-        if line[line.index("ManagedSystem")+1] in m:
-            m[line[line.index("ManagedSystem")+1]].append(s)
+                if re.sub(r'{[^>]*}', "", child.tag) != "link":
+                    continue
+                match = re.match('^.*VirtualIOServer\/(\S+)$', child.attrib['href'])
+                if match:
+                    uuid = match.group(1)
+                    vios_num += 1
 
-    uuid_arr = []
-    for key, values in m.iteritems():
-        for uuid in values[1:]:
-            uuid_arr.append(uuid)
+                    write("Collect info on clients of VIOS%d: %s" %(vios_num, uuid))
+                    filename = "vios%s.xml" %(vios_num)
+                    rc = get_vios_info(hmc_info, uuid, filename)
+                    if rc != 0:
+                        write("ERROR: Failed to collect vios %s info: %s" %(uuid, rc[1]), lvl=0)
+                        continue
 
-    # Get PartitionIDs
-    vios_part = {} 
-    i = 0
-    for uuid in uuid_arr:
-        filename = "vios%s.xml" %(i)
-        i += 1
-        touch(filename)
-        get_client_info(hmc_info, uuid, filename)
+                    vios_name = build_vios_info(vios_info, filename, uuid)
+                    vios_info[vios_name]['managed_system'] = curr_managed_sys
+                    vios_info[vios_name]['filename'] = filename
+                    for key in vios_info[vios_name].keys():
+                        log("vios_info[%s][%s] = %s\n" %(vios_name, key, vios_info[vios_name][key]))
 
-        # TODO for every file vios(n) get the partion id
-        # Parse file for partition IDs
-        tree = ET.ElementTree(file=filename)
-        iter_ = tree.getiterator()
-        for elem in iter_:
-            vios_part[uuid] = "Not found"
-            if re.sub(r'{[^>]*}', "", elem.tag) == "PartitionID":
-                vios_part[uuid] = elem.text
-                break
+                    managed_system_info[curr_managed_sys]['vios'].append(vios_name)
 
-    # Clean up
-    i = 0
-    for uuid in uuid_arr:
-        filename = "vios%s.xml" %(i)
-        i += 1
-        remove(filename)
+    for ms in managed_system_info.keys():
+        for key in managed_system_info[ms].keys():
+            log("managed_system_info[%s][%s]: %s\n" %(ms, key, managed_system_info[ms][key]))
 
-    return m, vios_part
+    return 0
 
 # Inputs: HMC IP address, user ID, password
 # Output: session key
 def get_session_key(hmc_info, filename):
     s_key = ""
     try:
-        log("writing file: %s\n" %(filename))
         f = open(filename, 'wb')
     except IOError, e:
         write("ERROR: Failed to create file %s: %s." %(e.filename, e.strerror), lvl=0)
@@ -399,7 +390,6 @@ def get_session_key(hmc_info, filename):
     # Reopen the file in text mode
     f.close()
     try:
-        log("reading file: %s\n" %(filename))
         f = open(filename, 'r')
     except IOError, e:
         write("ERROR: Failed to create file %s: %s." %(e.filename, e.strerror), lvl=0)
@@ -412,48 +402,25 @@ def get_session_key(hmc_info, filename):
 
     return s_key.strip()
 
-# Given a corresponding flag, it will print out managed system
-# and vios UUIDs
-# Input: HMC IP address, session key, argument flag
-# Output: None
-def print_uuid(hmc_info, arg, filename):
+# Print out managed system and vios UUIDs
+# Input: HMC info hash to get: IP address, session key
+#        argument flag can be 'm' or 'a'
+# Output: 0 for success, !0 otherwise
+def print_uuid(managed_system_info, vios_info, arg):
+    write("\n%-37s    %-22s" %("Managed Systems UUIDs", "Serial"), lvl=0)
+    write("-" * 37 + "    " + "-"*22, lvl=0)
+    for key in managed_system_info.keys():
+        write("%-37s    %-22s" %(key, managed_system_info[key]['serial']), lvl=0)
 
-    log("print_uuid: arg=%s\n" %(arg))
-    rc = 0
+        if arg == 'a':
+            write("\n\t%-37s    %-14s" %("VIOS", "Partition ID"), lvl=0)
+            write("\t" + "-" * 37 + "    " + "-" * 14, lvl=0)
+            for vios in managed_system_info[key]['vios']:
+                write("\t%-37s    %-14s" %(vios_info[vios]['uuid'], vios_info[vios]['id']), lvl=0)
+            write("", lvl=0)
+    write("", lvl=0)
 
-    url = "https://%s:12443/rest/api/uom/ManagedSystem" %(hmc_info['hostname'])
-    curl_request(hmc_info['session_key'], url, filename)
-
-    # Mapped managed systems
-    m, vios_part = managed_system_discovery(filename, sess_key, hmc_info)
-
-    if arg == 'm':
-        # Print only managed systems
-        write("\nManaged Systems UUIDs                   Serial", lvl=0)
-        write("-" * 37 + "\t" + "-"*22, lvl=0)
-        for key, values in m.iteritems():
-            write(key + "\t" + ''.join(values[0]) + "\n", lvl=0)
-
-    elif arg == 'a':
-        write("\nManaged Systems UUIDs                   Serial", lvl=0)
-        write("-" * 37 + "\t" + "-"*22, lvl=0)
-        for key, values in m.iteritems():
-            write(key + "\t" + ''.join(values[0]) + "\n", lvl=0)
-            write("\tVIOS                                    Partition ID", lvl=0)
-            write("\t" + "-" * 37 + "\t" + "-" * 14, lvl=0)
-            for v in values[1:]:
-                write("\t" + v + "\t" + vios_part[v], lvl=0)
-            write("\n", lvl=0)
-
-    else:
-        # should never happen as checked in main
-        write("ERROR: Invalid argument '%s' for print_uuid." %(arg), lvl=0)
-        rc = 2
-
-    # Clean up
-    remove(filename)
-
-    return rc
+    return 0
 
 
 ### Parsing functions ###
@@ -461,9 +428,13 @@ def print_uuid(hmc_info, arg, filename):
 # Parse through xml to find tag value
 # Inputs: file name, tag
 # Output: value
-def grep (filename, tag):
+def grep(filename, tag):
     format_xml_file(filename)
-    tree = ET.ElementTree(file=filename)
+    try:
+        tree = ET.ElementTree(file=filename)
+    except:
+        log("WARNING: Failed to parse '%s' to find '%s' tag.\n" %(filename, tag))
+        return ""
     iter_ = tree.getiterator()
     for elem in iter_:
         if re.sub(r'{[^>]*}', "", elem.tag) == tag:
@@ -479,6 +450,7 @@ def grep_array(filename, tag):
     try:
         tree = ET.ElementTree(file=filename)
     except:
+        log("WARNING: Failed to parse '%s' to find '%s' tag.\n" %(filename, tag))
         return arr
     iter_ = tree.getiterator()
     for elem in iter_:
@@ -489,12 +461,13 @@ def grep_array(filename, tag):
 # Checks for existence of tag in file
 # Inputs: file name, tag
 # Output: True if tag exists, False otherwise
-def grep_check (filename, tag):
+def grep_check(filename, tag):
     #format_xml_file(filename)
     found = False
     try:
         tree = ET.ElementTree(file=filename)
     except:
+        log("WARNING: Failed to parse '%s' to find '%s' tag.\n" %(filename, tag))
         return found
     iter_ = tree.getiterator()
     for elem in iter_:
@@ -505,12 +478,12 @@ def grep_check (filename, tag):
 # Parse through specific sections of xml file to create a list of tag values
 # Inputs: file name, outer tag, inner tag
 # Output: array of values corresponding to given tags
-def awk (filename, tag1, tag2):
+def awk(filename, tag1, tag2):
     arr = []
     try:
         tree = ET.ElementTree(file=filename)
     except:
-        write("Cannot read file %s" %(filename), lvl=0)
+        log("WARNING: Failed to parse '%s' to find '%s' and '%s' tags.\n" %(filename, tag1, tag2))
         return arr
     iter_ = tree.getiterator()
     for elem in iter_:
@@ -521,6 +494,128 @@ def awk (filename, tag1, tag2):
                     arr.append(child.text)
     return arr
 
+# Parse VirtualIOServer XML file to build the vios_info hash
+# Inputs: vios hash, file name, vios uuid
+# Output: vios name use in hash if success,
+#         prints error message and exit upon error
+def build_vios_info(vios_info, filename, vios_uuid):
+    ns = { 'Atom': 'http://www.w3.org/2005/Atom', \
+           'vios': 'http://www.ibm.com/xmlns/systems/power/firmware/uom/mc/2012_10/' }
+    try:
+        e_tree = ET.parse(filename)
+    except IOError, e:
+        write("ERROR: Failed to parse %s for %s: %s." %(e.filename, vios_uuid, e.strerror), lvl=0)
+        remove(filename)
+        sys.exit(3)
+    except ElementTree.ParseError, e:
+        write("ERROR: Failed to parse %s for %s: %s" %(filename, vios_uuid, e), lvl=0)
+        remove(filename)
+        sys.exit(3)
+    e_root = e_tree.getroot()
+
+    #NOTE: Some VIOSes do not return PartitionName element
+    #      so in that case we use the short hostname as hash
+    #      key and replace partition name by this short hostname
+
+    # Get element: ResourceMonitoringIPAddress
+    e_RMIPAddress = e_root.find("Atom:content/vios:VirtualIOServer/vios:ResourceMonitoringIPAddress", ns)
+    if e_RMIPAddress is None:
+        write("ERROR: ResourceMonitoringIPAddress element not found in file %s" %(filename, vios_uuid), lvl=0)
+        sys.exit(3)
+
+    # Get the hostname 
+    (hostname, aliases, ip_list) = get_hostname(e_RMIPAddress.text)
+    vios_name = hostname.split(".")[0]
+
+    vios_info[vios_name] = {}
+    vios_info[vios_name]['uuid'] = vios_uuid
+    vios_info[vios_name]['hostname'] = hostname
+    vios_info[vios_name]['ip'] = e_RMIPAddress.text
+    
+    # Get element: PartitionName
+    e_PartionName = e_root.find("Atom:content/vios:VirtualIOServer/vios:PartitionName", ns)
+    if e_PartionName is None:
+        write("ERROR: PartitionName element not found in file %s" %(filename), lvl=0)
+        sys.exit(3)
+    vios_info[vios_name]['partition_name'] = e_PartionName.text
+
+    # Get element: PartitionID
+    e_PartionID = e_root.find("Atom:content/vios:VirtualIOServer/vios:PartitionID", ns)
+    if e_PartionID is None:
+        write("ERROR: PartitionID element not found in file %s" %(filename), lvl=0)
+        sys.exit(3)
+    vios_info[vios_name]['id'] = e_PartionID.text
+
+    # Get element: PartitionState
+    e_PartitionState = e_root.find("Atom:content/vios:VirtualIOServer/vios:PartitionState", ns)
+    if e_PartitionState is None:
+        write("ERROR: PartitionState element not found in file %s" %(filename), lvl=0)
+        sys.exit(3)
+    vios_info[vios_name]['partition_state'] = e_PartitionState.text
+
+    # Get element: ResourceMonitoringControlState
+    e_RMCState = e_root.find("Atom:content/vios:VirtualIOServer/vios:ResourceMonitoringControlState", ns)
+    if e_RMCState is None:
+        write("ERROR: ResourceMonitoringControlState element not found in file %s" %(filename), lvl=0)
+        sys.exit(3)
+    vios_info[vios_name]['control_state'] = e_RMCState.text
+
+    return vios_name
+
+# Parse XML file to build the lpar_info hash
+# Retrieve partition ID, Name and UUID
+# Inputs: lpar hash, file name
+# Output: 0 if success,
+#         prints error message and exit upon error
+def build_lpar_info(lpar_info, filename):
+    ns = { 'Atom': 'http://www.w3.org/2005/Atom', \
+           'lpar': 'http://www.ibm.com/xmlns/systems/power/firmware/uom/mc/2012_10/' }
+    try:
+        e_tree = ET.parse(filename)
+    except IOError, e:
+        write("ERROR: Failed to parse %s: %s." %(e.filename, e.strerror), lvl=0)
+        remove(filename)
+        sys.exit(3)
+    except ElementTree.ParseError, e:
+        write("ERROR: Failed to parse %s: %s" %(filename, e), lvl=0)
+        remove(filename)
+        sys.exit(3)
+    e_root = e_tree.getroot()
+
+    # Get partitions UUID: element: id
+    e_Partitions = e_root.findall("Atom:entry", ns)
+    if e_Partitions is None:
+        write("ERROR: Cannot get entry element in file %s" %(filename), lvl=0)
+        sys.exit(3)
+    elif len(e_Partitions) == 0:
+        write("No partion found in file %s" %(filename))
+        return 0
+
+    for e_Partition in e_Partitions:
+        # Get element: PartitionID
+        e_PartitionID = e_Partition.find("Atom:content/lpar:LogicalPartition/lpar:PartitionID", ns)
+        if e_PartitionID is None:
+            write("ERROR: PartitionID element not found in file %s" %(filename), lvl=0)
+            sys.exit(3)
+        lpar_info[e_PartitionID.text] = {}
+
+        e_PartitionUUID = e_Partition.find("Atom:id", ns)
+        if e_PartitionUUID is None:
+            write("ERROR: id element of PartitionID:%s entry not found in file %s" \
+                    %(e_PartitionID.text, filename), lvl=0)
+            sys.exit(3)
+        lpar_info[e_PartitionID.text]['uuid'] = e_PartitionUUID.text
+
+        # Get element: PartitionName
+        e_PartionName = e_Partition.find("Atom:content/lpar:LogicalPartition/lpar:PartitionName", ns)
+        if e_PartionName is None:
+            write("ERROR: PartitionName element of PartitionID=%s not found in file %s" \
+                    %(e_PartitionID.text, filename), lvl=0)
+            sys.exit(3)
+        lpar_info[e_PartitionID.text]['name'] = e_PartionName.text
+
+    return 0
+
 
 ### c_rsh functions ###
 
@@ -530,7 +625,6 @@ def get_vios_sea_state(vios_name, vios_sea):
 
     # file to get all SEA info (debug)
     filename = "%s_%s.txt" %(vios_name, vios_sea)
-    log("writing file: %s\n" %(filename))
     try:
         f = open(filename, 'w+')
     except IOError, e:
@@ -542,13 +636,13 @@ def get_vios_sea_state(vios_name, vios_sea):
             "LANG=C /bin/entstat -d %s" %(vios_sea)]
     (rc, output) = exec_cmd(cmd)
     if rc != 0:
-        write("ERROR: Failed to get the state of the %s SEA adapter on %s: %s" %(vios_SEA, vios_name, output), lvl=0)
+        write("ERROR: Failed to get the state of the %s SEA adapter on %s: %s" %(vios_sea, vios_name, output), lvl=0)
         return (1, "")
 
     found_stat = False
     found_packet = False
     for line in output.rstrip().split('\n'):
-        # file to get all SEA info (debug)
+        # file to get all SEA info (for debug)
         if not (f is None):
             f.write("%s\n" %(line))
 
@@ -574,11 +668,12 @@ def get_vios_sea_state(vios_name, vios_sea):
                 state = match_key.group(1)
                 continue
 
-    log("VIOS: %s adapter: %s state: %s" %(vios_name, vios_sea, state))
-
     if state == "":
         write("ERROR: Failed to get the state of the %s SEA adapter on %s: State field not found." %(vios_sea, vios_name), lvl=0)
         return (1, "")
+
+    log("VIOS %s sea adapter %s is in %s state" %(vios_name, vios_sea, state))
+    remove(filename)
     return (0, state)
 
 
@@ -587,68 +682,88 @@ def get_vios_sea_state(vios_name, vios_sea):
 def curl_request(sess_key, url, filename):
     log("Curl request, file: %s, url: %s\n" %(filename, url))
     try:
-        log("writing file: %s\n" %(filename))
         f = open(filename, 'wb')
     except IOError, e:
         write("ERROR: Failed to create file %s: %s." %(e.filename, e.strerror), lvl=0)
         sys.exit(3)
 
     hdrs = ["X-API-Session:%s" %(sess_key)]
+    hdr = cStringIO.StringIO()
+
     try:
         c = pycurl.Curl()
         c.setopt(c.HTTPHEADER, hdrs)
         c.setopt(c.URL, url)
         c.setopt(c.SSL_VERIFYPEER, False)
         c.setopt(c.WRITEDATA, f)
+        c.setopt(pycurl.HEADERFUNCTION, hdr.write)
         c.perform()
     except pycurl.error, (errno, strerror):
-        write("ERROR: Request to %s failed:\n %s." %(url, strerror), lvl=0)
-        sys.exit(3)
+        write("ERROR: Request to %s failed: %s." %(url, strerror), lvl=0)
+        f.close()
+        return 1, strerror
+
     f.close()
     # TBC - uncomment the 2 following lines for debug
     #f = open(filename, 'r')
     #log("\n### File %s content ###%s### End of file %s ###\n" %(filename, f.read(), filename))
 
+    # Get the http code and message to precise the error
+    status_line = hdr.getvalue().splitlines()[0]
+    m = re.match(r'HTTP\/\S*\s*(\d+)\s*(.*)\s*$', status_line)
+    if m:
+        http_code = str(m.group(1))
+        http_message = " %s" %(str(m.group(2)))
+    else:
+        http_code = c.getinfo(pycurl.HTTP_CODE)
+        http_message = ""
+
+    if http_code != "200":
+        log("Curl retuned '%s%s' for request '%s'\n" %(http_code, http_message, url))
+        return http_code, http_message
+
+    return 0
+
 # Find clients of a VIOS
 # No output, writes data to file
-def get_client_info(hmc_info, vios_uuid, filename):
+def get_vios_info(hmc_info, vios_uuid, filename):
     url = "https://%s:12443/rest/api/uom/VirtualIOServer/%s" %(hmc_info['hostname'], vios_uuid)
-    curl_request(hmc_info['session_key'], url, filename)
+    return curl_request(hmc_info['session_key'], url, filename)
 
-# Get VIOS UUID and ID info
-def get_vios_info(hmc_info, filename):
-    url = "https://%s:12443/rest/api/uom/VirtualIOServer" %(hmc_info['hostname'])
-    curl_request(hmc_info['session_key'], url, filename)
+# Get Managed Systems
+def get_managed_system(hmc_info, filename):
+    url = "https://%s:12443/rest/api/uom/ManagedSystem" %(hmc_info['hostname'])
+    return curl_request(hmc_info['session_key'], url, filename)
 
 # Find LPARs of a managed system
 def get_managed_system_lpar(hmc_info, managed_system_uuid, filename):
     url = "https://%s:12443/rest/api/uom/ManagedSystem/%s/LogicalPartition" %(hmc_info['hostname'], managed_system_uuid)
-    curl_request(hmc_info['session_key'], url, filename)
+    return curl_request(hmc_info['session_key'], url, filename)
 
 # Get VSCSI info
 def get_vscsi_info(hmc_info, vios_uuid, filename):
     url = "https://%s:12443/rest/api/uom/VirtualIOServer/%s?group=ViosSCSIMapping" %(hmc_info['hostname'], vios_uuid)
-    curl_request(hmc_info['session_key'], url, filename)
+    return curl_request(hmc_info['session_key'], url, filename)
 
 # Get fibre channel mapping for VIOS
 def get_fc_mapping_vios(hmc_info, vios_uuid, filename):
     url = "https://%s:12443/rest/api/uom/VirtualIOServer/%s?group=ViosFCMapping" %(hmc_info['hostname'], vios_uuid)
-    curl_request(hmc_info['session_key'], url, filename)
+    return curl_request(hmc_info['session_key'], url, filename)
 
 # Get info about LPAR to see network connections
-def get_lpar_info(hmc_info, lpar, filename):
+def get_vfc_client_adapter(hmc_info, lpar, filename):
     url = "https://%s:12443/rest/api/uom/LogicalPartition/%s/VirtualFibreChannelClientAdapter" %(hmc_info['hostname'], lpar)
-    curl_request(hmc_info['session_key'], url, filename)
+    return curl_request(hmc_info['session_key'], url, filename)
 
 # Get info about VIOS Network connections 
 def get_network_info(hmc_info, vios_uuid, filename):
     url = "https://%s:12443/rest/api/uom/VirtualIOServer/%s?group=ViosNetwork" %(hmc_info['hostname'], vios_uuid)
-    curl_request(hmc_info['session_key'], url, filename)
+    return curl_request(hmc_info['session_key'], url, filename)
 
 # Get info about VIOS Virtual NIC Dedicated adapter
 def get_vnic_info(hmc_info, uuid, filename):
     url = "https://%s:12443/rest/api/uom/LogicalPartition/%s/VirtualNICDedicated" %(hmc_info['hostname'], uuid)
-    curl_request(hmc_info['session_key'], url, filename)
+    return curl_request(hmc_info['session_key'], url, filename)
 
 
 #===============================================================================
@@ -674,17 +789,17 @@ Usage: vioshc -h
     """, lvl=0)
 
 
-# TBC - handle log name and location after discussion
 # Establish a log file
 today = datetime.now()
 log_dir = "%s/vios_maint" %(LOG_DIR)
 if not os.path.exists(log_dir):
     os.makedirs(log_dir)
 os.chdir(log_dir)
-log_path = "%s/vios_maint.log" %(log_dir)
-# log file format is vios_maint_YY_mm_dd_HH_MM_SS.log
-#log_path = "%s/vios_maint_%02d_%02d_%d_%02d_%02d_%02d.log" \
-#            %(log_dir, today.year, today.month, today.day, today.hour, today.minute, today.second)
+# Log file format is vios_maint_YYYY-mm-dd_HHMMSS.log
+# TBC - for debugging it could be easier to have a fixed file name
+#log_path = "%s/vios_maint.log" %(log_dir)
+log_path = "%s/vios_maint_%04d-%02d-%d_%02d%02d%02d.log" \
+            %(log_dir, today.year, today.month, today.day, today.hour, today.minute, today.second)
 try:
     log_file = open(log_path, 'a+', 1)
 except IOError, e:
@@ -739,6 +854,8 @@ for opt, arg in opts:
     elif opt in ('-v'):
         verbose += 1
         sys.stdout = sys.stderr
+        if verbose == 1:
+            print "Log file is: %s\n" %(log_path)   # no need to log in file here
     elif opt in ('-l'):
         action = "list"
         list_arg = arg
@@ -798,7 +915,7 @@ hmc_info['hostname'] = hostname
 hmc_info['ip'] = ip_list[0]
 
 for key in hmc_info.keys():
-    log("hmc_info: %s, %-13s = %s\n" %(nim_name, key, hmc_info[key]))
+    log("hmc_info[%-13s] = %s\n" %(key, hmc_info[key]))
 
 write("Getting HMC credentials")
 # If either username or password are empty, try to retrieve them
@@ -810,7 +927,7 @@ if (hmc_user_id != ""):
 if (hmc_password != ""):
     hmc_info['user_password'] = hmc_password
 
-write("Getting HMC seesion key")
+write("Getting HMC session key")
 session_key = get_session_key(hmc_info, filename_session_key)
 if session_key == "":
     write("ERROR: Failed to get %s session key." %(hmc_ip), lvl=0)
@@ -819,11 +936,27 @@ hmc_info['session_key'] = session_key
 
 
 #######################################################
+# Get Managed System info
+#######################################################
+log("\nGet Managed System info\n")
+rc = get_managed_system(hmc_info, filename_systems)
+if rc != 0:
+    write("ERROR: Failed to collect managed system info: %s" %(rc[1]), lvl=0)
+    sys.exit(2)
+build_managed_system(hmc_info, vios_info, managed_system_info, filename_systems)
+
+
+#######################################################
 # List UUIDs
 #######################################################
 if action == "list":
     log("\nListing UUIDs\n")
-    rc = print_uuid(hmc_info, list_arg, filename_systems)
+    rc = print_uuid(managed_system_info, vios_info, list_arg)
+    # Clean up
+    remove(filename_systems)
+    remove(filename_session_key)
+    for name in vios_info.keys():
+        remove(vios_info[name]['filename'])
     sys.exit(rc)
 
 
@@ -832,236 +965,115 @@ if action == "list":
 # Get name and partition ID of each VIOS then filter
 # the ones of interest
 #######################################################
-
-write("Find VIOS(es) Name, IP Address, ID, UUID")
-# Find clients of VIOS1, write data to file
-write("Collect info on clients of VIOS1: %s" %(vios1_uuid))
-get_client_info(hmc_info, vios1_uuid, filename_vios1)
-
-if vios_num > 1:
-    # Find clients of VIOS2, write data to file
-    write("Collect info on clients of VIOS2: %s" %(vios2_uuid))
-    get_client_info(hmc_info, vios2_uuid, filename_vios2)
-
-# Find UUID and IP addresses of VIOSes, write data to file
-write("Collect info on the VIOS(es)")
-get_vios_info(hmc_info, filename_vios_info)
-
-# Grab all UUIDs, names, and partition IDs from xml doc and map the names in
-# order to get UUID to name mapping as well as partition ID
-vios_uuid_list = []
-vios_name_list = []
-vios_partitionid_list = []
-vios_ip_list = []
-vios_partition_state_list = []
-vios_control_state_list = []
-
-# Create list of partition UUIDs
-vios_uuid_list = grep_array(filename_vios_info, 'PartitionUUID')
-if len(vios_uuid_list) == 0:
-    write("ERROR: Unable to detect any VIOS partition UUIDs. Exiting Now.", lvl=0)
+write("Find VIOS(es) Name from specified UUID(s)")
+for name in vios_info.keys():
+    if vios_info[name]['uuid'] == vios1_uuid:
+        vios1_name = name
+        vios_info[name]['role'] = 'primary'
+    elif vios_num > 1 and vios_info[name]['uuid'] == vios2_uuid:
+        vios2_name = name
+        vios_info[name]['role'] = 'secondary'
+    else:
+        remove(vios_info[name]['filename'])
+        del vios_info[name]
+for name in vios_info.keys():
+    for key in vios_info[name].keys():
+        log("vios_info[%s][%s] = %s\n" %(name, key, vios_info[name][key]))
+rc = 0
+if vios1_name == "":
+    write("ERROR: Failed to find VIOS1 %s info." %(vios1_uuid), lvl=0)
+    rc = 1
+if vios_num > 1 and vios2_name == "":
+    write("ERROR: Failed to find VIOS2 %s info." %(vios2_uuid), lvl=0)
+    rc = 1
+if rc != 0:
     sys.exit(2)
-
-# Create list of partition names
-# NOTE: some VIOSes do not return PartitionName elements
-name_list = []
-name_list = grep_array(filename_vios_info, 'PartitionName')
-for name in name_list:
-    if name not in vios_name_list:
-        vios_name_list.append(name)
-if len(vios_name_list) == 0:
-    write("WARNING: Unable to detect any VIOS partition names. This may affect the the output of this program.", lvl=0)
-
-# Create a list of partition IDs
-part_id = False
-tree = ET.ElementTree(file=filename_vios_info)
-iter_ = tree.getiterator()
-for elem in iter_:
-    if part_id and ( re.sub(r'{[^>]*}', "", elem.tag) == 'PartitionID'):
-        vios_partitionid_list.append(elem.text)
-        part_id = False
-    if re.sub(r'{[^>]*}', "", elem.tag) == 'PartitionCapabilities':
-        part_id = True
-if len(vios_partitionid_list) == 0:
-    write("WARNING: Unable to detect any VIOS partition IDs. This may affect the the output of this program.", lvl=0)
-
-# Create list of IP addresses
-vios_ip_list = grep_array(filename_vios_info, 'ResourceMonitoringIPAddress')
-if len(vios_ip_list) == 0:
-    write("ERROR: Unable to detect any VIOS partition IP addresses. Exiting Now.", lvl=0)
-    sys.exit(2)
-
-# Create list of partition states
-vios_partition_state_list = grep_array(filename_vios_info, 'PartitionState')
-if len(vios_partition_state_list) == 0:
-    write("ERROR: Unable to detect partition states. Exiting Now.", lvl=0)
-    sys.exit(2)
-
-# Create list of resource monitoring control states
-vios_control_state_list = grep_array(filename_vios_info, 'ResourceMonitoringControlState')
-if len(vios_control_state_list) == 0:
-    write("ERROR: Unable to detect partition control states. Exiting Now.", lvl=0)
-    sys.exit(2)
-
-# Create new lists with just the info we want - since we have to query all
-# the VIOS in the HMC for the REST API, there is a lot of unnecessary info
-i = 0
-ip_idx = 0
-state_idx = 0
-control_state_idx = 0
 
 primary_header = "\nPrimary VIOS Name         IP Address      ID         UUID                "
 backup_header = "\nBackup VIOS Name          IP Address      ID         UUID                "
 divider= "-------------------------------------------------------------------------------------------------"
 format = "%-25s %-15s %-10s %-40s "
 
-for vios in vios_uuid_list:
+for vios in vios_info.keys():
     # If Resource Monitoring Control State is inactive, it will throw off our UUID/IP pairing
-    if (vios_control_state_list[control_state_idx] == "inactive") and \
-        (vios_partition_state_list[state_idx] == "not"):
-        i += 1
-        state_idx += 2
-        control_state_idx += 1
-        continue
-
-    if (vios_control_state_list[control_state_idx] == "inactive") and \
-        (vios_partition_state_list[state_idx] == "running"):
-        i += 1
-        state_idx += 1
-        control_state_idx += 1
+    if (vios_info[vios]['control_state'] == "inactive"):
         continue
 
     # If VIOS is not running, skip it otherwise it will throw off our UUID/IP pairing
-    if vios_partition_state_list[state_idx] == "not":
-        i += 1
-        state_idx += 2
+    if vios_info[vios]['partition_state'] == "not running":
         continue
 
     # Get VIOS1 info (original VIOS)
-    if vios == vios1_uuid:
-        vios1_name = vios_name_list[i]
-        vios_info[vios1_name] = {}
-        vios_info[vios1_name]['id'] = vios_partitionid_list[i]
-        vios_info[vios1_name]['ip'] = vios_ip_list[ip_idx]
-        vios_info[vios1_name]['uuid'] = vios_uuid_list[i]
-        (hostname, aliases, ip_list) = get_hostname(vios_info[vios1_name]['ip'])
-        vios_info[vios1_name]['hostname'] = hostname
+    if vios_info[vios]['role'] == "primary":
         write(primary_header, lvl=0)
-        write(divider, lvl=0)
-        write(format %(vios1_name, \
-                       vios_info[vios1_name]['ip'], \
-                       vios_info[vios1_name]['id'], \
-                       vios_info[vios1_name]['uuid']), lvl=0)
-
-    # Get VIOS2 info (VIOS to take on new clients)
-    if vios == vios2_uuid:
-        vios2_name = vios_name_list[i]
-        vios_info[vios2_name] = {}
-        vios_info[vios2_name]['id'] = vios_partitionid_list[i]
-        vios_info[vios2_name]['ip'] = vios_ip_list[ip_idx]
-        vios_info[vios2_name]['uuid'] = vios_uuid_list[i]
-        (hostname, aliases, ip_list) = get_hostname(vios_info[vios2_name]['ip'])
-        vios_info[vios2_name]['hostname'] = hostname
+    else:
         write(backup_header, lvl=0)
-        write(divider, lvl=0)
-        write(format %(vios2_name, \
-                       vios_info[vios2_name]['ip'], \
-                       vios_info[vios2_name]['id'], \
-                       vios_info[vios2_name]['uuid']), lvl=0)
 
-    control_state_idx += 1
-    state_idx += 1
-    ip_idx += 1
-    i += 1
+    write(divider, lvl=0)
+    write(format %(vios_info[vios]['partition_name'], \
+                   vios_info[vios]['ip'], \
+                   vios_info[vios]['id'], \
+                   vios_info[vios]['uuid']), lvl=0)
 
-# Log VIOS information
-for vios in vios_info.keys():
-    log("vios: %s, %s\n" %(vios, str(vios_info[vios])))
-
-rc = 0
-if vios1_name == "":
-    write("ERROR: Unable to find VIOS with UUID %s." %(vios1_uuid), lvl=0)
-    rc += 1
-if vios_num > 1 and vios2_name == "":
-    write("ERROR: Unable to find VIOS with UUID %s." %(vios2_uuid), lvl=0)
-    rc += 1
-if rc != 0:
+# Check both vios are in the same CEC
+if vios_info[vios1_name]['managed_system'] != managed_system_uuid:
+    write("ERROR: VIOS1 %s (UUID: %s) is on Managed System %s, not %s\n" \
+            %(vios1_name, vios_info[vios1_name]['uuid'], vios_info[vios1_name]['managed_system'], managed_system_uuid), lvl=0)
     sys.exit(2)
-
-remove(filename_vios_info)
+if vios_num > 1 and vios_info[vios2_name]['managed_system'] != managed_system_uuid:
+    write("ERROR: VIOS2 %s (UUID: %s) is on Managed System %s, not %s\n" \
+            %(vios2_name, vios_info[vios2_name]['uuid'], vios_info[vios2_name]['managed_system'], managed_system_uuid), lvl=0)
+    sys.exit(2)
 
 
 #######################################################
 # Get UUIDs of all LPARs that belong to the managed
 # system that we are interested in
-# i.e., they are specified in vios1_xml and vios2_xml
 #######################################################
 # Get managed system LPAR info, write data to file
-write("Getting managed system LPAR info")
-get_managed_system_lpar(hmc_info, managed_system_uuid, filename_lpar_info)
-
-lpar_id = []
-lpar_name = []
-lpar_uuid = []
+write("Collect LPAR info for managed system: %s" %(managed_system_uuid))
+rc1 = get_managed_system_lpar(hmc_info, managed_system_uuid, filename_lpar_info)
+if rc1 != 0:
+    write("ERROR: Failed to collect managed system %s info: %s" %(managed_system_uuid, rc1[1]), lvl=0)
+    sys.exit(2)
 
 # Check for error response in file
 if grep_check(filename_lpar_info, 'HttpErrorResponse'):
     write("ERROR: Request to https://%s:12443/rest/api/uom/ManagedSystem/%s/LogicalPartition returned Error Response." %(hmc_ip, managed_system_uuid), lvl=0)
     write("Unable to detect LPAR information.", lvl=0)
 
-# Create list of LPAR partition IDs
-lpar_id = grep_array(filename_lpar_info, 'PartitionID')
-# Create list of LPAR partition names
-lpar_name = grep_array(filename_lpar_info, 'PartitionName')
-# Create list of LPAR UUIDs
-# skip first element because first <id> tag not relevant
-lpar_uuid = grep_array(filename_lpar_info, 'id')
-lpar_uuid.pop(0)
+build_lpar_info(lpar_info, filename_lpar_info)
 
-# Associative array to map LPAR UUID to its partition name
-uuid_to_partname = {}
-# Associative array to map LPAR ID to its UUID
-id_to_uuid = {}
-# Associative array to map LPAR ID to its partition name
-id_to_name = {}
+# Log VIOS information
+for id in lpar_info.keys():
+    log("lpar[%s]: %s\n" %(id, str(lpar_info[id])))
 
-write("LPAR information belonging to managed system with UUID %s:" %(managed_system_uuid))
-
-# Create associative arrays
-log("lpar_id: %s, lpar_name: %s, lpar_uuid: %s\n" %(lpar_id, lpar_name, lpar_uuid))
-i = 0
-for lpar in lpar_id:
-    uuid_to_partname[lpar_uuid[i]] = lpar_name[i]
-    id_to_uuid[lpar_id[i]] = lpar_uuid[i]
-    id_to_name[lpar_id[i]] = lpar_name[i]
-    i += 1
 
 #######################################################
 # Check active client are the same for VIOS1 and VIOS2
 #######################################################
 write("Check active client(s):")
-active_client_id_1 = []
-active_client_id_2 = []
-active_client_uuid = []
-active_client_name = []
+active_client_id = []
+active_client = {}
 diff_clients = []
 
 # Find configured clients of VIOS1
 # TBC - ConnectingPartitionID is present in VirtualFibreChannelMapping elem
-active_client_id_1 = awk(filename_vios1, 'ServerAdapter', 'ConnectingPartitionID')
-log("active_client_id_1: " + str(active_client_id_1) + "\n")
+active_client['vios1'] = awk(vios_info[vios1_name]['filename'], 'ServerAdapter', 'ConnectingPartitionID')
+log("active_client['vios1']: " + str(active_client['vios1']) + "\n")
 
 if vios_num > 1:
     # Find configured clients of VIOS2
-    active_client_id_2 = awk(filename_vios2, 'ServerAdapter', 'ConnectingPartitionID')
-    log("active_client_id_2: " + str(active_client_id_2) + "\n")
+    active_client['vios2'] = awk(vios_info[vios2_name]['filename'], 'ServerAdapter', 'ConnectingPartitionID')
+    log("active_client['vios2']: " + str(active_client['vios2']) + "\n")
 
     # Check that both VIOSes have the same clients
     # if they do not, all health-checks will fail and we cannot continue the program
-    for id in active_client_id_1:
-        if (id not in active_client_id_2) and (id not in diff_clients):
+    for id in active_client['vios1']:
+        if (id not in active_client['vios2']) and (id not in diff_clients):
             diff_clients.append(id)
     diff_clients.sort()
+    log("diff_clients: " + str(diff_clients) + "\n")
 
 # Check for error response in file
 if grep_check(filename_lpar_info, 'HttpErrorResponse'):
@@ -1070,17 +1082,12 @@ if grep_check(filename_lpar_info, 'HttpErrorResponse'):
 elif len(diff_clients) == 0:
     if vios_num > 1:
         write("PASS: Active client lists are the same for both VIOSes")
-    active_client_id = active_client_id_1
+    active_client_id = active_client['vios1']
     num_hc_pass += 1
 else:
     write("FAIL: Active client lists are not the same for VIOS1 and VIOS2, check these clients:", lvl=0)
-    write(diff_clients, lvl=0)
+    write(str(diff_clients), lvl=0)
     num_hc_fail += 1
-
-for id in active_client_id:
-    active_client_uuid.append(id_to_uuid[id])
-    active_client_name.append(id_to_name[id])
-
 
 write("\nActive Client Information:")
 
@@ -1091,12 +1098,9 @@ write(header)
 write(divider)
 
 # Print active clients, IDs, and UUIDs
-for i in range(len(active_client_id)):
-    write(format %(active_client_name[i], active_client_id[i], active_client_uuid[i]))
+for id in active_client_id:
+    write(format %(lpar_info[id]['name'], id, lpar_info[id]['uuid']))
 
-remove(filename_vios1)
-if vios_num > 1:
-    remove(filename_vios2)
 remove(filename_lpar_info)
 
 
@@ -1105,7 +1109,7 @@ remove(filename_lpar_info)
 #######################################################
 touch(filename_msg)
 
-write("\nVSCSI Mapping info for %s:" %(vios1_name))
+write("\nvSCSI Mapping info for %s:" %(vios1_name))
 
 # Get VSCSI info, write data to file
 get_vscsi_info(hmc_info, vios1_uuid, filename_vscsi_mapping1)
@@ -1141,12 +1145,11 @@ remote_slot_vscsi = grep_array(filename_vscsi_mapping1, 'RemoteSlotNumber')
 # Grab the backup device name
 backing_device_vscsi = grep_array(filename_vscsi_mapping1, 'BackingDeviceName')
 
-# write("Test output: ", lvl=0)
-# write("Local partition VSCSI: %s" %(local_partition_vscsi), lvl=0)
-# write("Remote partition VSCSI: %s" %(remote_partition_vscsi), lvl=0)
-# write("Local slot VSCSI: %s" %(local_slot_vscsi), lvl=0)
-# write("Remote slot VSCSI: %s" %(remote_slot_vscsi), lvl=0)
-# write("Backing device VSCSI: %s\n" %(backing_device_vscsi), lvl=0)
+log("Local  partition VSCSI: %s\n" %(local_partition_vscsi))
+log("Remote partition VSCSI: %s\n" %(remote_partition_vscsi))
+log("Local  slot VSCSI     : %s\n" %(local_slot_vscsi))
+log("Remote slot VSCSI     : %s\n" %(remote_slot_vscsi))
+log("Backing device VSCSI  : %s\n" %(backing_device_vscsi))
 
 # Parse for backup device info
 try:
@@ -1197,16 +1200,20 @@ divider = "---------------------------------------------------------------------
 format = "%-15s %-75s %-20s %-20s "
 write(vscsi_header)
 write(divider)
-# TODO - if statement until storage info is accessible
-if len(backing_device_vscsi) != 0:
+# TODO - Currently the storage info is not available (BackingDeviceName in the XML)
+if len(backing_device_vscsi) == 0:
+    write("Not yet implemented")
+else:
     msg_txt = open(filename_msg, 'w+')
     for partition in local_partition_vscsi:
         if partition == vios_info[vios2_name]['id']:
-            # ssh into VIOS1 to make sure we can open disk
-            try:
-                cmd = "ssh padmin@%s \"print '< /dev/%s' | oem_setup_env\"" %(vios_info[vios1_name]['ip'], backing_device_vscsi[j])
-                os.popen(cmd)
-
+            cmd = [C_RSH, vios_info[vios1_name]['hostname'],
+                    "< /dev/%s" %(backing_device_vscsi[j])]
+            (rc, output) = exec_cmd(cmd)
+            if rc != 0 or output.rstrip() != "":
+                write("ERROR: Cannot open disk %s on %s" %(backing_device_vscsi[j], vios_info[vios1_name]['hostname']), lvl=0)
+                log("/dev/%s device open failure: %s\n" %(backing_device_vscsi[j], output.rstrip()))
+            else:
                 if backing_device_res_vscsi[j] == "SinglePath":
                     msg = "WARNING: You have single path for %s on VIOS %s which is likely an issue" %(backing_device_vscsi[j], vios1_name)
                     write(msg, lvl=0)
@@ -1222,10 +1229,6 @@ if len(backing_device_vscsi) != 0:
                 else:
                     available_disks_1.append(backing_device_id_vscsi[j])
                     write(format %(backing_device_vscsi[j], backing_device_id_vscsi[j], backing_device_type_vscsi[j], backing_device_res_vscsi[j]))
-
-            except:
-                write("ERROR: health check failed, cannot open disk %s on %s." %(backing_device_vscsi[j], vios_info[vios1_name]['ip']), lvl=0)
-
             j += 1
         i += 1
     msg_txt = open(filename_msg, 'r')
@@ -1256,7 +1259,7 @@ if vios_num > 1:
     
     touch(filename_msg)
     
-    write("\nVSCSI Mapping info for %s:" %(vios2_name))
+    write("\nvSCSI Mapping info for %s:" %(vios2_name))
     
     # Get VSCSI info, write data to file
     get_vscsi_info(hmc_info, vios2_uuid, filename_vscsi_mapping2)
@@ -1277,6 +1280,12 @@ if vios_num > 1:
     # Grab the backup device name
     backing_device_vscsi = grep_array(filename_vscsi_mapping2, 'BackingDeviceName')
     
+    log("Local  partition VSCSI: %s\n" %(local_partition_vscsi))
+    log("Remote partition VSCSI: %s\n" %(remote_partition_vscsi))
+    log("Local  slot VSCSI     : %s\n" %(local_slot_vscsi))
+    log("Remote slot VSCSI     : %s\n" %(remote_slot_vscsi))
+    log("Backing device VSCSI  : %s\n" %(backing_device_vscsi))
+
     # Parse for backup device info
     try:
         tree = ET.ElementTree(file=filename_vscsi_mapping2)
@@ -1328,15 +1337,20 @@ if vios_num > 1:
     write(vscsi_header)
     write(divider)
     
-    if len(backing_device_vscsi) != 0:
+    # TODO - Currently the storage info is not available (BackingDeviceName in the XML)
+    if len(backing_device_vscsi) == 0:
+        write("Not yet implemented")
+    else:
         msg_txt = open(filename_msg, 'w+')
         for partition in local_partition_vscsi:
             if partition == vios_info[vios2_name]['id']:
-                # ssh into VIOS2 to make sure we can open disk
-                try:
-                    cmd = "ssh padmin@%s \"print '< /dev/%s' | oem_setup_env\"" %(vios_info[vios2_name]['ip'], backing_device_vscsi[j])
-                    os.popen(cmd)
-    
+                cmd = [C_RSH, vios_info[vios2_name]['hostname'],
+                        "< /dev/%s" %(backing_device_vscsi[j])]
+                (rc, output) = exec_cmd(cmd)
+                if rc != 0 or output.rstrip() != "":
+                    write("ERROR: Cannot open disk %s on %s" %(backing_device_vscsi[j], vios_info[vios2_name]['hostname']), lvl=0)
+                    log("/dev/%s device open failure: %s\n" %(backing_device_vscsi[j], output.rstrip()))
+                else:
                     if backing_device_res_vscsi[j] == "SinglePath":
                         msg = "WARNING: You have single path for %s on VIOS %s which is likely an issue" %(backing_device_vscsi[j], vios2_name)
                         write(msg, lvl=0)
@@ -1352,10 +1366,6 @@ if vios_num > 1:
                     else:
                         available_disks_2.append(backing_device_id_vscsi[j])
                         write(format %(backing_device_vscsi[j], backing_device_id_vscsi[j], backing_device_type_vscsi[j], backing_device_res_vscsi[j]))
-    
-                except:
-                    write("ERROR: health check failed, cannot open disk '%s' on %s." %(backing_device_vscsi[j], vios_info[vios2_name]['ip']), lvl=0)
-    
                 j += 1
             i += 1
     
@@ -1366,7 +1376,7 @@ if vios_num > 1:
     remove(filename_msg)
     
     ###########
-    write("\nVSCSI Validation:")
+    write("\nvSCSI Validation:")
 
     # Check to see if any disks are different
     for disk in available_disks_1:
@@ -1419,7 +1429,7 @@ write(divider)
 i = 0 # index for looping through all partition mappings
 for partition in local_partition_fc:
     if partition == vios_info[vios1_name]['id']:
-        write(format %(vios1_name, local_slot_fc[i], id_to_name[remote_partition_fc[i]]))
+        write(format %(vios1_name, local_slot_fc[i], lpar_info[remote_partition_fc[i]]['name']))
     i += 1
 
 remove(filename_fc_mapping1)
@@ -1427,7 +1437,7 @@ remove(filename_fc_mapping1)
 
 if vios_num > 1:
     #######################################################
-    # Fiber Channel Mapping for VIOS2
+    # Fibre Channel Mapping for VIOS2
     #######################################################
     write("\nFC MAPPINGS for %s:" %(vios2_name))
     
@@ -1460,23 +1470,17 @@ if vios_num > 1:
     
     for partition in local_partition_fc:
         if partition == vios_info[vios2_name]['id']:
-            write(format %(vios2_name, local_slot_fc[i], id_to_name[remote_partition_fc[i]]))
+            write(format %(vios2_name, local_slot_fc[i], lpar_info[remote_partition_fc[i]]['name']))
         i += 1
     
     remove(filename_fc_mapping2)
 
 
 #######################################################
-#NPIV PATH VALIDATION
+# NPIV PATH VALIDATION
+# TODO - The REST API does not send data for this request,
+# the response is: 204 no content 
 #######################################################
-# In order to do this step, we need to generate a pair of authentication keys to
-# allow for automatic login without having to sign in to other vios
-# path validation
-
-###########
-# cannot get data for fc_mapping2
-# 204 no content response
-###########
 
 fc_ids = []
 drc_list = []
@@ -1484,35 +1488,33 @@ WWPN_list = []
 
 write("\nNPIV Path Validation:")
 
-for lpar in active_client_uuid:
+# Check for path validation by running mig_vscsi to check for notzoned tag
+# for each active partition, get notzoned info for both vios and check if false
+for id in active_client_id:
     # Get LPAR info, write data to xml file
-    get_lpar_info(hmc_info, lpar, filename_npiv_mapping)
+    get_vfc_client_adapter(hmc_info, lpar_info[id]['uuid'], filename_npiv_mapping)
     # TBC - uncomment the 2 following lines for debug
-    #cmd = "cat %s > output" %(filename_npiv_mapping)
-    #os.system(cmd)
+    #f = open(filename_npiv_mapping, 'r')
+    #log("\n### File %s content ###%s### End of file %s ###\n" %(filename_npiv_mapping, f.read(), filename_npiv_mapping))
 
     # Create a list of fibre channel IDs
     fc_ids = grep_array(filename_npiv_mapping, 'LocalPartitionID')
-    #Create a list of dynamic reconfiguration connectors
+    if len(fc_ids) == 0:
+        write("No vFC client adapter ID for lpar: %s (%s)" %(lpar_info[id]['name'], lpar_info[id]['uuid']))
+        remove(filename_npiv_mapping)
+        continue
+    
+    # Create a list of dynamic reconfiguration connectors
     drc_list = grep_array(filename_npiv_mapping, 'DynamicReconfigurationConnectorName')
     # Create a list of WWPN
     WWPN_list = grep_array(filename_npiv_mapping, 'WWPN')
 
-    # Process two at a time, so i and j are both counters
-    j = 0
-
-    notzoned_value1 = ""
-    notzoned_value2 = ""
-
-    # Check for path validation by running mig_vscsi to check for notzoned tag
     touch(filename_adapter1)
     touch(filename_adapter2)
 
     # Cannot get mig_vscsi to stdout so need to use another file to get info
+    j = 0
     for partition_id in fc_ids:
-        adapter1_xml = open(filename_adapter1, 'r')
-        adapter2_xml = open(filename_adapter2, 'r')
-
         if vios_info[vios1_name]['id'] == partition_id:
             lower_WWPN = WWPN_list[j]
             j += 1  # get the higher WWPN
@@ -1520,35 +1522,55 @@ for lpar in active_client_uuid:
             DRC = drc_list[j]
             j += 1 # one more increment bc we skip clients, and drc_list repeats itself twice
 
-            # ssh to both, get notzoned info, check to see if false
-            cmd = "ssh padmin@%s \"echo /usr/lib/methods/mig_vscsi -f get_adapter -t vscsi -s %s -a ACTIVE_LPM -c RPA  -M 1 -d 5 -W 0x%s -w 0x%s -F %s | ioscli oem_setup_env \"" %(vios_info[vios1_name]['ip'], DRC, lower_WWPN, higher_WWPN, adapter1_xml)
-            os.popen(cmd)
+            cmd = [C_RSH, vios_info[vios1_name]['hostname'],
+                    "LANG=C /usr/lib/methods/mig_vscsi -f get_adapter -t vscsi -s %s -a ACTIVE_LPM -c RPA  -M 1 -d 5 -W 0x%s -w 0x%s -F %s" \
+                    %(DRC, lower_WWPN, higher_WWPN, filename_adapter1)]
+            (rc, output) = exec_cmd(cmd)
+            if rc != 0 or re.match('.*ERROR.*', output.rstrip()):
+                write("ERROR: Cannot get vSCSI adapter info on %s, mig_vscsi command: %s" %(vios1_name, output.rstrip()), lvl=0)
+                num_hc_fail += 1
+                continue
 
             if os.path.exists(filename_adapter1):
-                notzoned_value1 = grep(filename_adapter1, 'notZoned')
+                notzoned_value = grep(filename_adapter1, 'notZoned')
+                notzoned = re.match('.*false.*', notzoned_value)
 
-        if vios_info[vios2_name]['id'] == partition_id:
+        if vios_num > 1 and vios_info[vios2_name]['id'] == partition_id:
             lower_WWPN = WWPN_list[j]
             j += 1 # get the higher WWPN
             higher_WWPN = WWPN_list[j]
             DRC = drc_list[j]
             j += 1 # one more increment bc we skip clients, and drc_list repeats itself twice
-            # ssh to both, get notzoned info, check to see if false
-            cmd = "ssh padmin@%s \"echo /usr/lib/methods/mig_vscsi -f get_adapter -t vscsi -s %s -a ACTIVE_LPM -c RPA  -M 1 -d 5 -W 0x%s -w 0x%s -F %s | ioscli oem_setup_env \"" %(vios_info[vios2_name]['ip'], DRC, lower_WWPN, higher_WWPN, adapter2_xml)
-            os.popen(cmd)
+
+            cmd = [C_RSH, vios_info[vios2_name]['hostname'],
+                    "LANG=C /usr/lib/methods/mig_vscsi -f get_adapter -t vscsi -s %s -a ACTIVE_LPM -c RPA  -M 1 -d 5 -W 0x%s -w 0x%s -F %s" \
+                    %(DRC, lower_WWPN, higher_WWPN, filename_adapter2)]
+            (rc, output) = exec_cmd(cmd)
+            if rc != 0 or re.match('.*ERROR.*', output.rstrip()):
+                write("ERROR: Cannot get vSCSI adapter info on %s, mig_vscsi command: %s" %(vios2_name, output.rstrip()), lvl=0)
+                num_hc_fail += 1
+                continue
 
             if os.path.exists(filename_adapter2):
-                notzoned_value1 = grep(filename_adapter1, 'notZoned')
+                notzoned_value = grep(filename_adapter2, 'notZoned')
+                notzoned = notzoned and re.match('.*false.*', notzoned_value)
 
-        if (notzoned_value1 == "false") and (notzoned_value2 == "false"):
-            write("PASS: %s has a path through both VIOSes." %(uuid_to_partname[lpar]), lvl=0)
+        if notzoned:
+            if vios_num > 1:
+                write("PASS: %s has a NPIV path through both VIOSes." %(lpar_info[id]['name']))
+            else:
+                write("PASS: %s has a NPIV path through the VIOS." %(lpar_info[id]['name']))
             num_hc_pass += 1
         else:
-            write("FAIL: %s doesn't have a path through both VIOSes." %(uuid_to_partname[lpar]), lvl=0)
+            if vios_num > 1:
+                write("FAIL: %s doesn't have a NPIV path through both VIOSes." %(lpar_info[id]['name']), lvl=0)
+            else:
+                write("FAIL: %s doesn't have a NPIV path through the VIOS." %(lpar_info[id]['name']))
             num_hc_fail += 1
 
-        adapter1_xml.close()
-        adapter2_xml.close()
+    remove(filename_adapter1)
+    remove(filename_adapter2)
+    remove(filename_npiv_mapping)
 
 
 #######################################################
@@ -1654,7 +1676,6 @@ if vios_num > 1:
         write("WARNING: VIOS2 %s State should be BACKUP instead of STANDBY." %(vios2_name), lvl=0)
 
 # Pass conditions
-# TBC - how to handle this for only one VIOS?
 if (vios1_state == "PRIMARY") and (vios2_state == "BACKUP"):
     write("PASS: SEA is configured for failover.")
     num_hc_pass += 1
@@ -1693,15 +1714,14 @@ if vios_num > 1:
 #######################################################
 # VNIC Validation with REST API
 #######################################################
-
 vnic_fail_flag = 0
 vnic_configured = 0
 
 write("\nVNIC Validation:")
 
-for uuid in active_client_uuid:
+for id in active_client_id:
     # Get VNIC info, write data to file
-    get_vnic_info(hmc_info, uuid, filename_vnic_info)
+    get_vnic_info(hmc_info, lpar_info[id]['uuid'], filename_vnic_info)
 
     # grep_devnull
     if grep_check(filename_vnic_info, '200 OK'):
@@ -1719,12 +1739,15 @@ else:
     write(divider)
 
     i = 0
-    for uuid in active_client_uuid:
+    for id in active_client_id:
         vios1_associated = "DISCONNECTED"
-        vios2_associated = "DISCONNECTED"
+        if vios_num > 1:
+            vios2_associated = "DISCONNECTED"
+        else:
+            vios2_associated = "n/a"
 
         # Get VNIC info, write data to vnic_info.xml
-        get_vnic_info(hmc_info, uuid, filename_vnic_info)
+        get_vnic_info(hmc_info, lpar_info[id]['uuid'], filename_vnic_info)
 
         # Check to see if VNIC Server on VIOS1 is associated
         associated_vios = grep_array(filename_vnic_info, 'AssociatedVirtualIOServer')
@@ -1734,14 +1757,14 @@ else:
             if vios2_uuid in vios:
                 vios2_associated = "CONNECTED"
 
-        write(format %(active_client_name[i], active_client_id[i], vios1_associated, vios2_associated))
+        write(format %(lpar_info[id]['name'], active_client_id[i], vios1_associated, vios2_associated))
         write("\n")
         if vios1_associated == "DISCONNECTED":
-            write("FAIL: %s is not connected with VIOS1 VNIC Server." %(active_client_name[i]), lvl=0)
+            write("FAIL: %s is not connected with VIOS1 VNIC Server." %(lpar_info[id]['name']), lvl=0)
             vnic_fail_flag = 1
             num_hc_fail += 1
         if vios2_associated == "DISCONNECTED":
-            write("FAIL: %s is not connected with VIOS2 VNIC Server." %(active_client_name[i]), lvl=0)
+            write("FAIL: %s is not connected with VIOS2 VNIC Server." %(lpar_info[id]['name']), lvl=0)
             vnic_fail_flag = 1
             num_hc_fail += 1
 
@@ -1766,6 +1789,11 @@ pass_pct = num_hc_pass * 100 / total_hc
 write("\n\n%d of %d Health Checks Passed" %(num_hc_pass, total_hc), lvl=0)
 write("%d of %d Health Checks Failed" %(num_hc_fail, total_hc), lvl=0)
 write("Pass rate of %d%%\n" %(pass_pct), lvl=0)
+
+remove(filename_session_key)
+remove(filename_systems)
+for name in vios_info.keys():
+    remove(vios_info[name]['filename'])
 
 log_file.close()
 

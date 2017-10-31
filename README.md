@@ -25,8 +25,8 @@ You can use the following option to provide additionnal inforamtion:
 ## Exit Status
 
 This command returns the following exit values:
-- 0     in case of success, list operation succeeds or the pre-check is pass 
-- >0    an error occurred.
+- 0        in case of success, list operation succeeds or the pre-check is pass 
+- not 0    an error occurred.
 
 ## Files
 
@@ -39,7 +39,9 @@ This command returns the following exit values:
 
 - /usr/sbin/vioshc.py -l a -i e08hmc2.aus.stglabs.ibm.com                                                                              
 
-<pre><code>Managed Systems UUIDs                   Serial
+<pre><code>
+
+Managed Systems UUIDs                   Serial
 -------------------------------------   ----------------------
 931a9335-bb33-388b-b708-a01b5cd24534    8246-L2C*100194A
 
@@ -47,7 +49,6 @@ This command returns the following exit values:
         -------------------------------------   --------------
         21C6104E-2D61-4180-B525-8522ECFF2938    2
         5D01525E-8A34-4B1E-997B-36932C562755    1
-
 
 582ae663-feb3-3946-9602-ee0999416c59    8246-L2C*10018FA
 
@@ -60,7 +61,9 @@ This command returns the following exit values:
 
 - /usr/sbin/vioshc.py -i e08hmc2.aus.stglabs.ibm.com -m 582ae663-feb3-3946-9602-ee0999416c59 -U 277A536E-7436-4AB7-B5C5-7398AB470AEB -U 7DDD1C13-95C6-4801-9BCF-9EA829670217
 
-<pre><code>Primary VIOS Name         IP Address      ID         UUID                
+<pre><code>
+
+Primary VIOS Name         IP Address      ID         UUID                
 -------------------------------------------------------------------------------------------------
 gdrh9v2                   9.3.18.143      2          277A536E-7436-4AB7-B5C5-7398AB470AEB     
 
@@ -70,9 +73,7 @@ gdrh9v1                   9.3.18.142      1          7DDD1C13-95C6-4801-9BCF-9EA
 
 
 4 of 4 Health Checks Passed
-
 0 of 4 Health Checks Failed
-
 Pass rate of 100%
 
 </code></pre>
