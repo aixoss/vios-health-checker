@@ -17,6 +17,9 @@
     vioshc [-u id] [-p pwd] -i hmc_ip_addr -m managed_system_uuid -U vios_uuid [-v]
 - To perform the heath check on a pair of VIO Servers
     vioshc [-u id] [-p pwd] -i hmc_ip_addr -m managed_system_uuid -U vios_uuid -U vios_uuid [-v]
+- To chose the path directory to save the log files and .xml files, use -L /path option
+    by default all trace are stored in /tmp/vios_maint directory
+- To keep xml directory and .xml files use the -D option
 
 You can use the following option to provide additionnal inforamtion:
  -u : hmc user ID
@@ -32,8 +35,8 @@ This command returns the following exit values:
 
 - /usr/sbin/vios-hc.py
 - /tmp/vios_maint/*.log             traces of the execution
-- /tmp/vios_maint/sessionkey.xml    HMC credentials used for HMC requests 
-- /tmp/vios_maint/*.xml             results of REST API calls can remain in case of error
+- /tmp/vios_maint/<xml_dir_xxxx>/sessionkey.xml    HMC credentials used for HMC requests 
+- /tmp/vios_maint/<xml_dir_xxxx>/*.xml  results of REST API calls can remain in case of error
 
 ## Example
 
@@ -71,10 +74,17 @@ Backup VIOS Name          IP Address      ID         UUID
 -------------------------------------------------------------------------------------------------
 gdrh9v1                   9.3.18.142      1          7DDD1C13-95C6-4801-9BCF-9EA829670217     
 
+PASS: Active client lists are the same for both VIOSes
+FAIL: vSCSI configurations are not identical on both vioses.
+PASS: same FC mapping configuration on both vioses.
+FAIL: SEA deserving VLAN(s) 12 are not in the correct state for HA operation.
+PASS: SEA deserving VLAN(s) 10,11 are configured for failover.
+No VNIC Configuration Detected.
 
-4 of 4 Health Checks Passed
-0 of 4 Health Checks Failed
-Pass rate of 100%
+
+3 of 5 Health Checks Passed
+2 of 5 Health Checks Failed
+Pass rate of 60%
 
 </code></pre>
 
