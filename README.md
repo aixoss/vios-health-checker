@@ -2,8 +2,23 @@
 
 ## Purpose
 
- Health assessment tool for VIOS pre-install routines
- It check if a VIO Server or a pair of VIO Servers could be updated.
+Health assessment tool for VIOS pre-install routines.
+It check if a VIO Server or a pair of VIO Servers could be updated.
+
+It checks the
+- active client LPARs
+- vSCSI mapping
+- NPIV Path for Fibre Channel configuration
+- SEA configuration
+- VNIC configuration
+
+## Note
+
+This tool:
+- should be executed on the NIM master (it uses lsnim commands).
+- uses Curl (pycurl) to interract with the HMC REST API.
+- will try to retrieve the HMC login/password from the HMC password file (using dkeyexch) if not specified. 
+- uses a HMC session key for Curl requests.
 
 ## Syntax
 
@@ -17,8 +32,8 @@
     vioshc [-u id] [-p pwd] -i hmc_ip_addr -m managed_system_uuid -U vios_uuid [-v]
 - To perform the heath check on a pair of VIO Servers
     vioshc [-u id] [-p pwd] -i hmc_ip_addr -m managed_system_uuid -U vios_uuid -U vios_uuid [-v]
-- To chose the path directory to save the log files and .xml files, use -L /path option
-    by default all trace are stored in /tmp/vios_maint directory
+- To choose the path directory to save the log files and .xml files, use -L /path option
+    by default all traces are stored in /tmp/vios_maint directory
 - To keep xml directory and .xml files use the -D option
 
 You can use the following option to provide additionnal inforamtion:
