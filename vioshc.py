@@ -21,6 +21,7 @@ import os
 import sys
 import getopt
 import subprocess
+import threading
 import re
 import pycurl
 import xml.etree.cElementTree as ET
@@ -28,6 +29,7 @@ import socket
 import cStringIO
 import shutil
 
+# TODO: Use Standard logger instead of log routine
 
 #######################################################
 # Initialize variables
@@ -135,26 +137,59 @@ def exec_cmd(cmd):
     """
     Execute the given command
     return
-        - ret_code  (return code of the command)
-        - output   stdout and stderr of the command
+        - rc        return code of the command
+        - output    stdout of the command
+        - errout    stderr of the command
     """
+    global log_dir
     rc = 0
     output = ''
+    errout = ''
+    th_id = threading.current_thread().ident
+    stderr_file = os.path.join(log_dir, 'cmd_stderr_{}'.format(th_id))
     try:
-        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+        myfile = open(stderr_file, 'w')
+        output = subprocess.check_output(cmd, stderr=myfile)
+        myfile.close()
+        s = re.search(r'rc=([-\d]+)$', output)
+        if s:
+            rc = int(s.group(1))
+            output = re.sub(r'rc=[-\d]+\n$', '', output)  # remove the rc of c_rsh with echo $?
 
     except subprocess.CalledProcessError as exc:
+        myfile.close()
+        errout = re.sub(r'rc=[-\d]+\n$', '', exc.output)  # remove the rc of c_rsh with echo $?
         rc = exc.returncode
         write('Command: {} failed: {}'.format(cmd, exc.args), lvl=0)
 
+    except OSError as exc:
+        myfile.close
+        errout = re.sub(r'rc=[-\d]+\n$', '', exc.args[1])  # remove the rc of c_rsh with echo $?
+        rc = exc.args[0]
+        write('Command: {} failed, exception: {}'.format(cmd, exc.args), lvl=0)
+
+    except IOError as exc:
+        # generic exception
+        myfile.close
+        rc = exc.args[0]
+        write('Command: {} failed, exception: {}'.format(cmd, exc.args), lvl=0)
+
     except Exception as exc:
         rc = 1
-        write('Command: {} failed: {}'.format(cmd, exc.args), lvl=0)
+        write('Command: {} failed, exception: {}'.format(cmd, exc.args), lvl=0)
 
-    # TBC - uncomment for debug
-    # log('command {} returned [rc:{} output:{}]\n'.format(cmd, rc, output))
+    # check for error message
+    if os.path.getsize(stderr_file) > 0:
+        myfile = open(stderr_file, 'r')
+        errout += ''.join(myfile)
+        myfile.close()
+    os.remove(stderr_file)
 
-    return (rc, output)
+    log('command {} returned:\n'.format(cmd))
+    log(' rc:{}\n'.format(rc))
+    log(' stdout:{}\n'.format(output))
+    log(' stderr:{}\n'.format(errout))
+    return (rc, output, errout)
 
 
 # Interfacing functions #
@@ -183,9 +218,9 @@ def get_nim_info(obj_name):
     info = {}
 
     cmd = ['/usr/sbin/lsnim', '-l', obj_name]
-    (rc, output) = exec_cmd(cmd)
+    (rc, output, errout) = exec_cmd(cmd)
     if rc != 0:
-        write('ERROR: Failed to get {} NIM info: {}'.format(obj_name, output), lvl=0)
+        write('ERROR: Failed to get {} NIM info: {} {}'.format(obj_name, output, errout), lvl=0)
         return None
 
     for line in output.split('\n'):
@@ -205,9 +240,10 @@ def get_nim_name(hostname):
     name = ""
 
     cmd = ['lsnim', '-a', 'if1']
-    (rc, output) = exec_cmd(cmd)
+    (rc, output, errout) = exec_cmd(cmd)
     if rc != 0:
-        write('ERROR: Failed to get NIM name for {}: {}'.format(hostname, output), lvl=0)
+        write('ERROR: Failed to get NIM name for {}: {} {}'
+              .format(hostname, output, errout), lvl=0)
         return ""
 
     for line in output.split('\n'):
@@ -251,10 +287,10 @@ def get_decrypt_file(passwd_file, type, hostname):
     log("getting decrypt file: {} for {} {}\n".format(passwd_file, type, hostname))
 
     cmd = ["/usr/bin/dkeyexch", "-f", passwd_file, "-I", type, "-H", hostname, "-S"]
-    (rc, output) = exec_cmd(cmd)
+    (rc, output, errout) = exec_cmd(cmd)
     if rc != 0:
-        write("ERROR: Failed to get the encrypted password file path for {}: {}"
-              .format(hostname, output), lvl=0)
+        write("ERROR: Failed to get the encrypted password file path for {}: {} {}"
+              .format(hostname, output, errout), lvl=0)
         return ""
 
     # dkeyexch output is like:
@@ -382,12 +418,15 @@ def get_session_key(hmc_info, filename):
     fields = '<LogonRequest schemaVersion=\"V1_0\" '\
              'xmlns=\"http://www.ibm.com/xmlns/systems/power/firmware/web/mc/2012_10/\"  '\
              'xmlns:mc=\"http://www.ibm.com/xmlns/systems/power/firmware/web/mc/2012_10/\"> '\
-             '<UserID>{}</UserID> <Password>{}</Password></LogonRequest>'\
-             .format(hmc_info['user_id'], hmc_info['user_password'])
-    hdrs = ['Content-Type: application/vnd.ibm.powervm.web+xml; type=LogonRequest']
+             '<UserID>{}</UserID>'\
+             .format(hmc_info['user_id'])
 
     log("curl request on: {}\n".format(url))
-    log("curl request fields: {}\n".format(fields))
+    log("curl request fields: {} <Password>xxx</Password></LogonRequest>\n".format(fields))
+    fields += ' <Password>{}</Password></LogonRequest>'\
+              .format(hmc_info['user_password'])
+    hdrs = ['Content-Type: application/vnd.ibm.powervm.web+xml; type=LogonRequest']
+
     try:
         c = pycurl.Curl()
         c.setopt(c.HTTPHEADER, hdrs)
@@ -687,11 +726,12 @@ def get_vios_sea_state(vios_name, sea_device):
 
     # ssh into vios1
     cmd = [C_RSH, vios_info[vios_name]['hostname'],
-           "LANG=C /bin/entstat -d {}".format(sea_device)]
-    (rc, output) = exec_cmd(cmd)
+           "LC_ALL=C /bin/entstat -d {}; echo rc=$?".format(sea_device)]
+    log("SharedEthernetAdapter cmd='{}'\n".format(cmd))
+    (rc, output, errout) = exec_cmd(cmd)
     if rc != 0:
-        write("ERROR: Failed to get the state of the {} SEA adapter on {}: {}"
-              .format(sea_device, vios_name, output), lvl=0)
+        write("ERROR: Failed to get the state of the {} SEA adapter on {}: {} {}"
+              .format(sea_device, vios_name, output, errout), lvl=0)
         return (1, "")
 
     found_stat = False
@@ -1032,13 +1072,14 @@ def build_sea_config(vios_name, vios_uuid, sea_config):
             sea_config[vios_name][VLAN_IDs]["Priority"] = Priority
     for vlan_id in sea_config[vios_name]:
         (rc, state) = get_vios_sea_state(vios_name, sea_config[vios_name][vlan_id]["SEADeviceName"])
-        sea_config[vios_name][vlan_id]["SEADeviceState"] = state
+        if rc == 0:
+            sea_config[vios_name][vlan_id]["SEADeviceState"] = state
 
 
 # Pycurl #
 
 def curl_request(sess_key, url, filename):
-    log("Curl request, file: {}, url: {}\n".format(filename, url))
+    log("Curl request, sess_key: {}, file: {}, url: {}\n".format(sess_key, filename, url))
     try:
         f = open(filename, 'wb')
     except IOError as e:
@@ -1055,7 +1096,15 @@ def curl_request(sess_key, url, filename):
         c.setopt(c.SSL_VERIFYPEER, False)
         c.setopt(c.WRITEDATA, f)
         c.setopt(pycurl.HEADERFUNCTION, hdr.write)
+        # for debug:
+        log("c.URL:'{}' url:'{}'\n".format(c.URL, url))
+        log(" c.HTTPHEADER='{}' hdrs:'{}'\n".format(c.HTTPHEADER, hdrs))
+        log(" c.SSL_VERIFYPEER='{}'\n".format(c.SSL_VERIFYPEER))
+        log(" c.WRITEDATA='{}' f:'{}'\n".format(c.WRITEDATA, f))
+        log(" headerfunction='{} {}'\n".format(pycurl.HEADERFUNCTION, hdr.write))
+
         c.perform()
+
     except pycurl.error as e:
         write("ERROR: Request to {} failed: {}.".format(url, e), lvl=0)
         f.close()
@@ -1078,7 +1127,7 @@ def curl_request(sess_key, url, filename):
         http_message = ""
 
     if http_code != "200":
-        log("Curl retuned '{}{}' for request '{}'\n".format(http_code, http_message, url))
+        log("Curl returned '{}{}' for request '{}'\n".format(http_code, http_message, url))
         return http_code, http_message
 
     return 0
@@ -1244,7 +1293,6 @@ for opt, arg in opts:
             sys.exit(2)
     elif opt in ('-v'):
         verbose += 1
-        sys.stdout = sys.stderr
         if verbose == 1:
             print("Log file is: {}\n".format(log_path))  # no need to log in file here
     elif opt in ('-l'):
@@ -1524,10 +1572,10 @@ if vios_num > 1:
 
     # Compare the both VSCSI Mapping
     if vscsi1_mapping == vscsi2_mapping:
-        write("PASS: same vSCSI configuration on both vioses.", lvl=0)
+        write("PASS: same vSCSI configuration on both VIOSes.", lvl=0)
         num_hc_pass += 1
     else:
-        write("FAIL: vSCSI configurations are not identical on both vioses.", lvl=0)
+        write("FAIL: vSCSI configurations are not identical on both VIOSes.", lvl=0)
         num_hc_fail += 1
 
 
@@ -1564,14 +1612,21 @@ for server in fc_mapping:
 
 # Compare the both vios Fiber Channel Mapping
 if vios_num > 1:
-    vios1_client_list = fc_mapping[vios1_name].keys().sort()
-    vios2_client_list = fc_mapping[vios2_name].keys().sort()
-    if vios1_client_list == vios2_client_list:
-        write("PASS: same FC mapping configuration on both vioses.", lvl=0)
+    if vios1_name not in fc_mapping and vios2_name not in fc_mapping:
+        write("PASS: no FC mapping configuration on both VIOSes.", lvl=0)
         num_hc_pass += 1
-    else:
-        write("FAIL: FC configurations are not identical on both vioses.", lvl=0)
+    elif vios1_name not in fc_mapping or vios2_name not in fc_mapping:
+        write("FAIL: FC configurations are not identical on both VIOSes.", lvl=0)
         num_hc_fail += 1
+    else:
+        vios1_client_list = fc_mapping[vios1_name].keys().sort()
+        vios2_client_list = fc_mapping[vios2_name].keys().sort()
+        if vios1_client_list == vios2_client_list:
+            write("PASS: same FC mapping configuration on both VIOSes.", lvl=0)
+            num_hc_pass += 1
+        else:
+            write("FAIL: FC configurations are not identical on both VIOSes.", lvl=0)
+            num_hc_fail += 1
 
 #######################################################
 # NPIV PATH VALIDATION
@@ -1626,13 +1681,14 @@ for id in active_client_id:
     #         j += 1  # one more increment bc we skip clients, and drc_list repeats itself twice
 
     #         cmd = [C_RSH, vios_info[vios1_name]['hostname'],
-    #                "LANG=C /usr/lib/methods/mig_vscsi -f get_adapter "
-    #                "-t vscsi -s %s -a ACTIVE_LPM -c RPA  -M 1 -d 5 -W 0x%s -w 0x%s -F %s"
+    #                "LC_ALL=C /usr/lib/methods/mig_vscsi -f get_adapter "
+    #                "-t vscsi -s %s -a ACTIVE_LPM -c RPA  -M 1 -d 5 -W 0x%s -w 0x%s -F %s; "
+    #                "echo rc=$?"
     #                % (DRC, lower_WWPN, higher_WWPN, filename_adapter1)]
-    #         (rc, output) = exec_cmd(cmd)
+    #         (rc, output, errout) = exec_cmd(cmd)
     #         if rc != 0 or re.match('.*ERROR.*', output.rstrip()):
-    #             write("ERROR: Cannot get vSCSI adapter info on %s, mig_vscsi command: %s"
-    #                   % (vios1_name, output.rstrip()), lvl=0)
+    #             write("ERROR: Cannot get vSCSI adapter info on %s, mig_vscsi command: %s %s"
+    #                   % (vios1_name, output.rstrip(), errout), lvl=0)
     #             num_hc_fail += 1
     #             continue
 
@@ -1648,13 +1704,14 @@ for id in active_client_id:
     #         j += 1  # one more increment bc we skip clients, and drc_list repeats itself twice
 
     #         cmd = [C_RSH, vios_info[vios2_name]['hostname'],
-    #                "LANG=C /usr/lib/methods/mig_vscsi -f get_adapter "
-    #                "-t vscsi -s %s -a ACTIVE_LPM -c RPA  -M 1 -d 5 -W 0x%s -w 0x%s -F %s"
+    #                "LC_ALL=C /usr/lib/methods/mig_vscsi -f get_adapter "
+    #                "-t vscsi -s %s -a ACTIVE_LPM -c RPA  -M 1 -d 5 -W 0x%s -w 0x%s -F %s; "
+    #                "echo rc=$?"
     #                % (DRC, lower_WWPN, higher_WWPN, filename_adapter2)]
-    #         (rc, output) = exec_cmd(cmd)
+    #         (rc, output, errout) = exec_cmd(cmd)
     #         if rc != 0 or re.match('.*ERROR.*', output.rstrip()):
-    #             write("ERROR: Cannot get vSCSI adapter info on %s, mig_vscsi command: %s"
-    #                   % (vios2_name, output.rstrip()), lvl=0)
+    #             write("ERROR: Cannot get vSCSI adapter info on %s, mig_vscsi command: %s %s"
+    #                   % (vios2_name, output.rstrip(), errout), lvl=0)
     #             num_hc_fail += 1
     #             continue
 
@@ -1755,6 +1812,10 @@ if vios_num > 1:
             write('PASS: SEA(s) deserving VLAN(s) {} are not configured on both VIOSes but '
                   'not in usable state.'.format(vlan_id), lvl=0)
             continue
+        elif vios1_state == "":
+            write('PASS: SEA(s) deserving VLAN(s) {} are not configured on both VIOSes but '
+                  'not in usable state.'.format(vlan_id), lvl=0)
+            continue
         else:
             write('FAIL: SEA(s) deserving VLAN(s) {} are not configured on both VIOSes.'
                   .format(vlan_id), lvl=0)
@@ -1763,10 +1824,15 @@ if vios_num > 1:
 
     for vlan_id in sea_config[vios2_name]:
         if vlan_id not in sea_config[vios1_name]:
-            if sea_config[vios2_name][vlan_id]["SEADeviceState"] == "LIMBO":
+            vios2_state = sea_config[vios2_name][vlan_id]["SEADeviceState"]
+            if vios2_state == "LIMBO":
                 write('PASS: SEA(s) deserving VLAN(s) {} are not configured on both VIOSes '
                       'but not in usable state.'.format(vlan_id), lvl=0)
                 num_hc_fail += 1
+                continue
+            elif vios2_state == "":
+                write('PASS: SEA(s) deserving VLAN(s) {} are not configured on both VIOSes but '
+                      'not in usable state.'.format(vlan_id), lvl=0)
                 continue
             else:
                 write('FAIL: SEA(s) deserving VLAN(s) {} are not configured on both VIOSes.'
